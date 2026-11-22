@@ -5,6 +5,8 @@ telegram_bot.handlers.callbacks through EXACT_ROUTES / PREFIX_ROUTES.
 """
 import logging
 
+from telegram.error import TelegramError
+
 from core.models import Produto, Encomenda
 from core import services
 from security.sanitization import sanitizar_id, EntradaInvalida
@@ -55,22 +57,32 @@ async def produto_detalhe(query, context, data, user_id):
     )
     keyboard = kb.teclado_produto(p)
     await query.answer()  # before the photo upload
-    if p.imagem:
-        if query.message.photo:
-            await query.message.edit_caption(
-                caption=caption, parse_mode="Markdown", reply_markup=keyboard)
-        else:
-            await query.message.delete()
-            with open(p.imagem.path, 'rb') as foto:
-                await context.bot.send_photo(
-                    chat_id=query.message.chat_id,
-                    photo=foto,
-                    caption=caption,
-                    parse_mode="Markdown",
-                    reply_markup=keyboard
-                )
-    else:
+    if not p.imagem:
         await responder(query, context, caption, keyboard)
+        return
+    if query.message.photo:
+        await query.message.edit_caption(
+            caption=caption, parse_mode="Markdown", reply_markup=keyboard)
+        return
+    # Send the photo before deleting the old screen, so a failure still leaves a usable message.
+    try:
+        with open(p.imagem.path, 'rb') as foto:
+            await context.bot.send_photo(
+                chat_id=query.message.chat_id,
+                photo=foto,
+                caption=caption,
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+    except (OSError, TelegramError):
+        # Includes TimedOut, where the photo may still have arrived (owner choice D2).
+        logger.warning("Imagem indisponível: produto_id=%s", p.id, exc_info=True)
+        await responder(query, context, caption + "\n(Imagem indisponível)", keyboard)
+        return
+    try:
+        await query.message.delete()
+    except TelegramError:
+        logger.debug("Mensagem anterior não apagada: produto_id=%s", p.id)
 
 
 async def sem_stock(query, context, data, user_id):

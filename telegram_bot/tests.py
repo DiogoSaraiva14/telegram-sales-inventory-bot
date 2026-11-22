@@ -1,11 +1,14 @@
 """Callback routing checks. Run with: python manage.py test telegram_bot"""
 import inspect
+import os
+import tempfile
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest import expectedFailure
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from django.test import SimpleTestCase
+from telegram.error import BadRequest, TimedOut
 
 from security.sanitization import ALLOWED_EXACT, ALLOWED_PREFIXES, validar_callback
 from telegram_bot import keyboards
@@ -135,3 +138,72 @@ class CheckoutAcknowledgementTests(SimpleTestCase):
         query, calls = await self._checkout(RuntimeError("stripe down"))
         self.assertEqual(calls, ["answer", "stripe", "responder"])
         query.answer.assert_awaited_once_with()
+
+
+class PhotoFallbackTests(SimpleTestCase):
+    """Change 1: a missing or failed photo still leaves a product screen with buttons."""
+
+    def setUp(self):
+        self.calls = []
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+        tmp.write(b"not really a jpeg")
+        tmp.close()
+        self.addCleanup(os.remove, tmp.name)
+        self.existing_path = tmp.name
+
+    async def _show(self, image_path, send_photo_error=None, delete_error=None):
+        produto = SimpleNamespace(
+            id=7, nome="SSD", preco=Decimal("50.00"), stock_atual=3, descricao=None,
+            categoria="ssd", imagem=SimpleNamespace(path=image_path),
+        )
+        query = MagicMock()
+        query.answer = AsyncMock()
+        query.message.photo = None
+        query.message.document = None
+        query.message.delete = AsyncMock(
+            side_effect=lambda: self.calls.append("delete") or (_raise(delete_error) if delete_error else None))
+        context = MagicMock()
+        context.bot.send_photo = AsyncMock(
+            side_effect=lambda **k: self.calls.append("send_photo") or (_raise(send_photo_error) if send_photo_error else None))
+        responder = AsyncMock(side_effect=lambda *a, **k: self.calls.append("responder"))
+        with patch.object(customer.services, "get_produto", AsyncMock(return_value=produto)), \
+             patch.object(customer, "responder", responder):
+            await customer.produto_detalhe(callbacks._RespostaUnica(query), context, "produto_7", 99)
+        return query, context, responder
+
+    def _assert_text_fallback(self, responder):
+        texto, keyboard = responder.await_args.args[2], responder.await_args.args[3]
+        self.assertIn("(Imagem indisponível)", texto)
+        callback_data = [b.callback_data for row in keyboard.inline_keyboard for b in row]
+        self.assertEqual(callback_data, ["encomendar_7", "cat_ssd"])
+
+    async def test_missing_file_edits_old_message_to_text(self):
+        query, context, responder = await self._show(os.path.join(self.existing_path + "_missing"))
+        self.assertEqual(self.calls, ["responder"])
+        self._assert_text_fallback(responder)
+        query.answer.assert_awaited_once_with()
+
+    async def test_upload_error_keeps_old_message_and_shows_text(self):
+        query, _, responder = await self._show(self.existing_path, send_photo_error=BadRequest("bad photo"))
+        self.assertEqual(self.calls, ["send_photo", "responder"])
+        self._assert_text_fallback(responder)
+
+    async def test_upload_timeout_also_falls_back_to_text(self):
+        _, _, responder = await self._show(self.existing_path, send_photo_error=TimedOut())
+        self.assertEqual(self.calls, ["send_photo", "responder"])
+        self._assert_text_fallback(responder)
+
+    async def test_success_sends_photo_before_deleting_old_message(self):
+        query, _, responder = await self._show(self.existing_path)
+        self.assertEqual(self.calls, ["send_photo", "delete"])
+        responder.assert_not_awaited()
+        query.answer.assert_awaited_once_with()
+
+    async def test_failed_delete_after_photo_is_ignored(self):
+        _, _, responder = await self._show(self.existing_path, delete_error=BadRequest("too old to delete"))
+        self.assertEqual(self.calls, ["send_photo", "delete"])
+        responder.assert_not_awaited()
+
+
+def _raise(exc):
+    raise exc
