@@ -4,9 +4,34 @@ A Telegram interface for a computer-parts catalog, backed by Django and PostgreS
 
 ## Status
 
-**Review snapshot; not yet validated for production or CV claims.** This private branch contains the source snapshot imported from GitLab for review and overhaul planning. The original GitHub version remains on main.
+**Not yet validated for production or CV claims.** This standalone private repository contains the source snapshot imported from GitLab, now being overhauled. main holds the imported project and later overhaul work.
 
-The application code has not been changed as part of the documentation review. No tests or runtime checks were run. The current core/tests.py file is an empty scaffold.
+The only code change since import is a behavior-preserving split of the original 1,061-line bot.py into the telegram_bot/ package and core/services.py. One bug fix rides with it: each callback query is now answered exactly once. Before, the bot acknowledged every button press and then tried to answer again with an alert (no stock, access denied, invalid request), which Telegram rejects. Handlers that do slow work (Stripe checkout, product photo upload, admin status change with customer notification) answer before that work, then report the result by editing or sending a message. Known gaps carried over unchanged from the original bot: tapping Confirm again while checkout is running can create a second order, and failures outside the Stripe call (creating the user, order or audit row, or uploading a product photo) leave the customer without a result message. See SECURITY.md, SEC-03 and SEC-13. telegram_bot/tests.py covers callback routing, the admin gate, single answers, and the known order-detail bug (SEC-12, an expected failure). No end-to-end runtime checks have been run against Telegram, Stripe, or PostgreSQL. core/tests.py is still an empty scaffold.
+
+## Running and project layout
+
+Start the bot with `python bot.py`. It loads .env, sets up Django, then starts polling. Run the Django admin and Stripe webhook separately with `python manage.py runserver`.
+
+```
+bot.py                     entry point (env, django.setup(), logging, start polling)
+telegram_bot/
+  app.py                   Application builder, handler registration, polling
+  guards.py                admin IDs, session timeout, blocked-account checks
+  constants.py             categories, state emoji, notification templates
+  keyboards.py             inline keyboard builders
+  ui.py                    responder() reply helper
+  notifications.py         order-status messages to customers
+  handlers/commands.py     /start, /admin
+  handlers/callbacks.py    callback validation, routing, admin gate
+  handlers/customer.py     catalog, product, orders, checkout, help
+  handlers/admin.py        products, stock, orders, users, audit
+  tests.py                 routing tests: python manage.py test telegram_bot
+core/                      Django app: models, admin, Stripe webhook, services.py (bot ORM operations)
+security/                  callback allowlist, input parsers, rate limit, action logging
+config/                    Django settings and URLs
+```
+
+The routing tests need no database, but Django settings still need `SECRET_KEY` and `DB_NAME` to be set (any placeholder works).
 
 ## Features observed in source
 
@@ -29,7 +54,6 @@ Python, Django, PostgreSQL, python-telegram-bot, Stripe, Pillow, and python-dote
 - Source head observed: 0039014ba96cc7d3a4946babad4e6716e47d3954
 - GitLab lists 27 commits; this import is an archive snapshot and does not preserve the GitLab commit history.
 - Python bytecode and media/produtos image files were excluded. The original source README was empty.
-- The import PR is draft. Do not merge it until the source baseline and overhaul scope are reviewed.
 - Confirm course/team sharing permissions and replace or license demo assets before making the repository public.
 
 ## Configuration

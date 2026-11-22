@@ -8,12 +8,12 @@ Telegram users interact with a polling bot process. Django provides the admin si
 
 Telegram user
 → Telegram Bot API polling
-→ bot.py command and callback router
+→ telegram_bot/ command handlers and callback router (started by bot.py)
 → Django ORM
 → PostgreSQL
 
 Customer payment
-→ bot.py creates Stripe Checkout session and a pending order
+→ the bot creates a pending order and a Stripe Checkout session (core/services.py)
 → customer pays on Stripe
 → Stripe POSTs a signed event to Django at /webhook/stripe/
 → core.views updates payment/order/audit rows
@@ -23,7 +23,16 @@ Staff can also mutate products, stock, orders, payments, and audit data through 
 
 ## Components and responsibilities observed
 
-- bot.py: Django setup, Telegram polling, keyboards, callback dispatch, ORM helpers, Stripe Checkout creation, notifications, and most admin/customer workflows. The file has about 1,061 lines and combines routing with business operations.
+- bot.py: entry point. Loads .env, runs django.setup(), configures logging, then starts telegram_bot.app.main(). Django must be set up before any telegram_bot module is imported.
+- telegram_bot/app.py: builds the python-telegram-bot Application, registers /start, /admin and the callback handler, and runs polling.
+- telegram_bot/handlers/commands.py: /start and /admin.
+- telegram_bot/handlers/callbacks.py: validates callback_data against the allowlist, looks up the route, and blocks admin routes for non-admin users before dispatch.
+- telegram_bot/handlers/customer.py and admin.py: one function per screen, plus EXACT_ROUTES/PREFIX_ROUTES tables that map callback values to those functions.
+- telegram_bot/keyboards.py, ui.py, constants.py: inline keyboards, the shared `responder` reply helper, and labels/message templates.
+- telegram_bot/guards.py: ADMIN_TELEGRAM_IDS, session timeout, and blocked-account decorators.
+- telegram_bot/notifications.py: order-status notifications sent through the running bot.
+- telegram_bot/tests.py: callback routing and admin-gate tests (no database needed).
+- core/services.py: async ORM operations used by the bot (orders, stock, Stripe Checkout creation, cancellation, users, audit). Moved unchanged from bot.py; not yet transactional.
 - config/: Django settings, URL configuration, WSGI, and ASGI entrypoints.
 - core/models.py: Utilizador, Produto, Encomenda, LinhaEncomenda, Pagamento, MovimentoStock, and RegistoAuditoria.
 - core/views.py: signed Stripe webhook plus payment success/expiry handling and Telegram payment confirmation.
@@ -39,7 +48,7 @@ Staff can also mutate products, stock, orders, payments, and audit data through 
 
 1. /start creates a Utilizador row if one does not exist.
 2. The user selects a product and confirms a one-item order.
-3. bot.py creates the order and line, reduces product stock, writes a stock movement, then requests a Stripe Checkout session and creates a Pagamento row.
+3. core/services.py creates the order and line, reduces product stock, writes a stock movement, then requests a Stripe Checkout session and creates a Pagamento row.
 4. Stripe completion marks payment paid and order confirmed. Expiration marks payment failed.
 
 ### Admin
@@ -54,7 +63,7 @@ The current order flow creates quantity one and a one-line order. This is observ
 
 ## Architecture review notes
 
-- Keep state-changing domain logic out of the large callback router. A service layer should own order, inventory, payment, and audit transactions.
+- State-changing ORM code now lives in core/services.py, but it is not yet transactional. That layer should own order, inventory, payment, and audit transactions.
 - Make order creation, stock reservation, payment-session persistence, and cancellation atomic or explicitly compensating.
 - Represent payment and order state transitions in one place; both admin interfaces should call the same operations.
 - Make webhook processing idempotent across concurrent/retried events and separate payment state changes from notification delivery.

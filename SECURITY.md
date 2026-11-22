@@ -18,7 +18,7 @@ Status: static review of the imported source snapshot only. No tests, runtime ex
 - Telegram admin callback branches generally check is_admin.
 - Dynamic Django admin badge values use format_html; the literal mark_safe badge values are constants.
 - No hard-coded Telegram or Stripe credential values were found in the inspected source.
-- The GitHub review branch is private; bundled product images and Python bytecode were not imported.
+- The GitHub repository is private; bundled product images and Python bytecode were not imported.
 
 ## Findings
 
@@ -28,11 +28,11 @@ config/settings.py lines 14–20 permits SECRET_KEY to be absent, defaults DEBUG
 
 ### SEC-02 — Order and stock writes are not atomic (High priority)
 
-bot.py lines 358–379 create an order, create a line, decrement stock, and write a stock movement as separate database operations. The stock value comes from an earlier read and is clamped with max(0, ...). Failures can leave partial state, and concurrent checkouts can both pass the prior stock check. Put the invariant in one transactional service with a conditional decrement or row lock.
+core/services.py `criar_encomenda` creates an order, creates a line, decrements stock, and writes a stock movement as separate database operations. The stock value comes from an earlier read and is clamped with max(0, ...). Failures can leave partial state, and concurrent checkouts can both pass the prior stock check. Put the invariant in one transactional service with a conditional decrement or row lock.
 
 ### SEC-03 — Checkout failures can strand pending orders and stock (High priority)
 
-bot.py lines 708–752 creates the order and consumes stock before creating Stripe Checkout. The exception path displays a support message but does not cancel the order or restore stock. Also define recovery if Stripe creates the session but saving the Pagamento row fails.
+telegram_bot/handlers/customer.py `confirmar_encomenda` creates the order and consumes stock before creating Stripe Checkout. The exception path displays a support message but does not cancel the order or restore stock. Also define recovery if Stripe creates the session but saving the Pagamento row fails. Failures before the Stripe call (creating the user, order, line, stock movement or audit row) are not caught, so after the button press is acknowledged the customer gets no result message. Product detail (telegram_bot/handlers/customer.py `produto_detalhe`) deletes the current message before uploading a product photo and does not report upload failures.
 
 ### SEC-04 — Expired Checkout does not resolve order or inventory (High priority)
 
@@ -44,19 +44,19 @@ core/views.py lines 45–79 checks payment state, then performs separate payment
 
 ### SEC-06 — Cancellation behavior diverges across admin surfaces (High priority)
 
-The Telegram admin flow permits cancelling pending or confirmed orders and restores stock (bot.py lines 409–435 and 977–986), but does not update/refund the related Pagamento. Django bulk cancellation only updates Encomenda.estado (core/admin.py lines 110–113), without stock movement, payment state, notification, or audit. Route every cancellation through the same domain operation and define refund handling.
+The Telegram admin flow permits cancelling pending or confirmed orders and restores stock (core/services.py `cancelar_encomenda_db`, called from telegram_bot/handlers/admin.py `_mudar_estado_e_notificar`), but does not update/refund the related Pagamento. Django bulk cancellation only updates Encomenda.estado (core/admin.py lines 110–113), without stock movement, payment state, notification, or audit. Route every cancellation through the same domain operation and define refund handling.
 
 ### SEC-07 — Markdown rendering uses dynamic values without escaping (Medium priority)
 
-The Telegram /start message formats the stored user name as Markdown (bot.py lines 522–528). sanitizar_nome_utilizador removes selected characters but does not escape Telegram Markdown metacharacters (security/sanitization.py lines 87–92). Product names/descriptions are also inserted into Markdown messages. Use context-specific escaping or avoid parse mode for dynamic content.
+The Telegram /start message formats the stored user name as Markdown (telegram_bot/handlers/commands.py `start`). sanitizar_nome_utilizador removes selected characters but does not escape Telegram Markdown metacharacters (security/sanitization.py lines 87–92). Product names/descriptions are also inserted into Markdown messages. Use context-specific escaping or avoid parse mode for dynamic content.
 
 ### SEC-08 — Personal identifiers are written to logs (Medium priority)
 
-security/decorators.py lines 65–72 logs Telegram user IDs and usernames. bot.py and core/views.py also log Telegram identifiers during notifications and administrative actions. Minimize or pseudonymize identifiers and define log retention/access.
+security/decorators.py lines 65–72 logs Telegram user IDs and usernames. telegram_bot/ (guards.py, notifications.py) and core/views.py also log Telegram identifiers during notifications and administrative actions. Minimize or pseudonymize identifiers and define log retention/access.
 
 ### SEC-09 — Rate limiting and session state are process-local (Medium priority)
 
-security/decorators.py lines 13–43 and bot.py lines 102–140 store rate and session state in module-level dictionaries. Limits reset on restart and are independent across processes; inactive keys are not periodically evicted. Document single-process assumptions or use bounded shared state if deployment scales out.
+security/decorators.py lines 13–43 and telegram_bot/guards.py store rate and session state in module-level dictionaries. Limits reset on restart and are independent across processes; inactive keys are not periodically evicted. Document single-process assumptions or use bounded shared state if deployment scales out.
 
 ### SEC-10 — Admin order editing can bypass domain invariants (Medium priority)
 
@@ -68,7 +68,11 @@ core/models.py lines 48–78 resizes and re-encodes the stored image whenever Pr
 
 ### SEC-12 — Input validation allows known callback prefixes, but route names have drifted (Medium priority)
 
-bot.py lines 641–660 emits and handles user_encomenda_<id>. security/sanitization.py lines 22–39 does not allow that prefix; it allows ver_encomenda_ instead. The validator at lines 43–54 rejects the generated order-detail callback, so users cannot open order details from their order list.
+telegram_bot/keyboards.py `teclado_minhas_encomendas` emits user_encomenda_<id> and telegram_bot/handlers/customer.py `encomenda_detalhe` handles it. security/sanitization.py lines 22–39 does not allow that prefix; it allows ver_encomenda_ instead. The validator at lines 43–54 rejects the generated order-detail callback, so users cannot open order details from their order list.
+
+### SEC-13 — Repeated checkout confirmation can create duplicate orders (High priority)
+
+telegram_bot/handlers/customer.py `confirmar_encomenda` acknowledges the button press, then creates the order and calls Stripe. The confirmation button stays active until the message is edited, and no in-flight or idempotency guard exists, so a second tap can create a second order and consume more stock. The original bot.py had the same behavior. Disable the button before processing and add a guard keyed on user and product, or make order creation idempotent.
 
 ## Additional review notes
 
@@ -77,7 +81,7 @@ bot.py lines 641–660 emits and handles user_encomenda_<id>. security/sanitizat
 - The source stores Telegram identifiers and names. The phone field exists in the model; no population path was observed in the reviewed bot code.
 - The project has no documented data retention, privacy notice, upload limits, or deployment threat model.
 - .gitignore excludes .env and media, but the source snapshot included committed product images. These were omitted from GitHub; verify ownership and licensing before adding replacements.
-- The admin_only decorator in security/decorators.py is defined but not used by bot.py; actual callback checks are repeated inline.
+- The admin_only decorator in security/decorators.py is defined but not used by the bot; the Telegram admin check runs once per callback in telegram_bot/handlers/callbacks.py and in the /admin command.
 
 ## Review limitations
 

@@ -1,10 +1,10 @@
 # Repository agent instructions
 
-Status: draft guidance for the private review branch.
+Status: draft guidance for this standalone private repository.
 
 ## Project context
 
-This repository is reviewing an archive snapshot of the private GitLab course project project-2025-2026-p088. The snapshot observed at GitLab commit 0039014ba96cc7d3a4946babad4e6716e47d3954 had 27 commits, but this GitHub import contains a single source snapshot commit. The current GitHub main branch is the earlier Telegram bot prototype; the migration branch is not merged.
+This is a standalone repository built from an archive snapshot of the private GitLab course project project-2025-2026-p088. The snapshot observed at GitLab commit 0039014ba96cc7d3a4946babad4e6716e47d3954 had 27 commits; this repository does not preserve that history. main contains the imported project as a single import commit, followed by overhaul work.
 
 The application is a Portuguese-Portugal Telegram sales bot backed by Django and PostgreSQL. It includes a product catalog, stock, orders, Stripe Checkout, Telegram admin callbacks, Django admin, and audit rows.
 
@@ -29,4 +29,4 @@ Read README.md, PROJECT_GUIDANCE.md, ARCHITECTURE.md, SECURITY.md, and ROADMAP.m
 - Distinguish static observations, confirmed runtime behavior, assumptions, and open questions.
 - Run tests or other checks only when the user asks for verification or the implementation task explicitly includes them.
 - Report changed files, commands/checks run, results, failures, and unresolved risks.
-- Do not merge the review PR or change the default branch without the user's explicit instruction.
+- Do not merge pull requests or change the default branch without the user's explicit instruction.

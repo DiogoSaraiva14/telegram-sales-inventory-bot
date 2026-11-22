@@ -36,7 +36,7 @@ Status: draft sequencing from a static code review. Keep the work bounded; do no
 
 ## Phase 3 — Refactor for maintainability
 
-- Split bot.py into routing, keyboards/presentation, and domain services.
+- Split bot.py into routing, keyboards/presentation, and domain services. (Structural split done: telegram_bot/ and core/services.py. Services are still non-transactional.)
 - Replace duplicated Telegram/Django admin business logic with shared operations.
 - Give state-changing operations explicit inputs/outputs and audit behavior.
 - Bound and externalize rate/session state if multi-process deployment is selected.

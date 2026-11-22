@@ -1,6 +1,6 @@
 # Project guidance
 
-Status: review snapshot. The overhaul has not started. LocalReach remains the user's main development priority; this Telegram project is being reviewed as a bounded portfolio candidate.
+Status: imported baseline under overhaul. The first step, a behavior-preserving split of bot.py, is done; business behavior is unchanged apart from answering each Telegram callback query once. LocalReach remains the user's main development priority; this Telegram project is being reviewed as a bounded portfolio candidate.
 
 ## Product purpose
 
@@ -13,10 +13,10 @@ The strongest potential portfolio story is an end-to-end order and inventory wor
 - Telegram bot polling starts from bot.py.
 - Django admin and a CSRF-exempt, Stripe-signature-verified webhook are configured.
 - The database models cover users, products, orders, order lines, payments, stock movements, and audit records.
-- The source uses a single large callback handler and separate Django admin operations.
+- The imported source used a single large callback handler in bot.py. It has since been split into the telegram_bot/ package (behavior-preserving refactor); Django admin operations remain separate.
 - core/tests.py contains only the default empty TestCase scaffold.
 - No deployment instructions, environment example, CI workflow, or license were present in the imported source.
-- Product images and bytecode were excluded from the GitHub review branch.
+- Product images and bytecode were excluded from this repository.
 
 ## Business rules to confirm before redesign
 
