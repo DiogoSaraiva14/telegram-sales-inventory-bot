@@ -30,4 +30,4 @@ The current order states are pendente, confirmada, enviada, entregue, and cancel
 
 ## Review items
 
-The source emits user_encomenda_<id> for customer order details, while the callback allowlist has ver_encomenda_ and omits user_encomenda_. The resulting order-detail action is rejected by the current validator. See telegram_bot/keyboards.py (`teclado_minhas_encomendas`), telegram_bot/handlers/customer.py (`encomenda_detalhe`), and security/sanitization.py around lines 22–54.
+Fixed (SEC-12): the order list emits ver_encomenda_<id>, which is on the callback allowlist and routed to the customer order-detail screen.

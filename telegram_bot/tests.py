@@ -4,7 +4,6 @@ import os
 import tempfile
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest import expectedFailure
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from django.test import SimpleTestCase
@@ -19,8 +18,19 @@ from telegram_bot.handlers import admin, callbacks, customer
 from telegram_bot.handlers.callbacks import encontrar_rota
 
 # Allowed by the validator but never handled, same as the original bot.py.
-# ver_encomenda_ is where the order-detail button should land; see KnownBugTests.
-UNROUTED_PREFIXES = {"cancelar_encomenda_", "ver_encomenda_"}
+UNROUTED_PREFIXES = {"cancelar_encomenda_"}
+
+
+class StartupConfigTests(SimpleTestCase):
+    def test_bot_refuses_to_start_with_missing_settings(self):
+        from telegram_bot import app
+        self.assertEqual(app.variaveis_em_falta({"TELEGRAM_TOKEN": "x", "STRIPE_SECRET_KEY": ""}),
+                         ["STRIPE_SECRET_KEY", "STRIPE_SUCCESS_URL", "STRIPE_CANCEL_URL"])
+        completo = {nome: "x" for nome in app.VARIAVEIS_OBRIGATORIAS}
+        self.assertEqual(app.variaveis_em_falta(completo), [])
+        with patch.object(app, "variaveis_em_falta", return_value=["TELEGRAM_TOKEN"]), \
+             self.assertRaisesMessage(SystemExit, "TELEGRAM_TOKEN"):
+            app.main()
 
 
 class RoutingTests(SimpleTestCase):
@@ -96,13 +106,42 @@ class CallbackAnswerTests(SimpleTestCase):
         self.query.answer.assert_awaited_once_with()
 
 
-class KnownBugTests(SimpleTestCase):
-    @expectedFailure  # SEC-12: list emits user_encomenda_<id>, allowlist only has ver_encomenda_. Remove this decorator when fixed.
-    def test_order_list_buttons_pass_validation(self):
+class OrderDetailTests(SimpleTestCase):
+    """SEC-12: the order list's buttons must pass validation and reach the detail screen."""
+
+    def test_order_list_buttons_pass_validation_and_route(self):
         encomenda = SimpleNamespace(id=1, total=Decimal("9.99"), estado="pendente")
         for row in keyboards.teclado_minhas_encomendas([encomenda]).inline_keyboard:
             for button in row:
-                validar_callback(button.callback_data)
+                self.assertIsNotNone(encontrar_rota(validar_callback(button.callback_data))[0])
+        self.assertIs(encontrar_rota("ver_encomenda_1")[0], customer.encomenda_detalhe)
+
+    async def _detalhe(self, dono):
+        encomenda = SimpleNamespace(
+            id=1, estado="pendente", total=Decimal("9.99"), utilizador=SimpleNamespace(telegram_id=dono),
+            data_encomenda=MagicMock(strftime=MagicMock(return_value="24/11/2026 10:00")),
+        )
+        query = MagicMock()
+        query.answer = AsyncMock()
+        responder = AsyncMock()
+        with patch.object(customer.services, "get_encomenda_detalhe", AsyncMock(return_value=encomenda)), \
+             patch.object(customer.services, "get_linhas_encomenda", AsyncMock(return_value=[
+                 SimpleNamespace(produto=SimpleNamespace(nome="SSD"), quantidade=1, subtotal=Decimal("9.99"))])), \
+             patch.object(customer, "responder", responder):
+            wrapped = callbacks._RespostaUnica(query)
+            await customer.encomenda_detalhe(wrapped, MagicMock(), "ver_encomenda_1", 99)
+            await wrapped.answer()
+        return query, responder
+
+    async def test_owner_sees_order_detail(self):
+        query, responder = await self._detalhe("99")
+        self.assertIn("Encomenda #1", responder.await_args.args[2])
+        query.answer.assert_awaited_once_with()
+
+    async def test_other_user_is_denied(self):
+        query, responder = await self._detalhe("123")
+        responder.assert_not_awaited()
+        query.answer.assert_awaited_once_with("⛔ Acesso negado.", show_alert=True)
 
 
 AGORA = 1_795_351_123
