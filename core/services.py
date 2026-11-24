@@ -5,6 +5,7 @@ transactional; the handlers call it through sync_to_async. The other helpers wer
 moved unchanged from bot.py and are not yet transactional (SECURITY.md SEC-06).
 """
 import hashlib
+from datetime import timedelta
 
 import stripe
 from asgiref.sync import sync_to_async
@@ -446,6 +447,33 @@ def cancelar_encomenda(encomenda_id: int, origem: str = ''):
                       + ('; pagamento reembolsado' if resultado == 'reembolsada' else ''),
         )
     return (resultado, encomenda)
+
+
+# ── Encomendas abandonadas sem pagamento (SEC-03, owner decision 2026-11-24) ──
+
+def _limite_abandono(horas):
+    return timezone.now() - timedelta(hours=horas)
+
+def encomendas_abandonadas(horas: int = 24):
+    """Ids of pending orders older than `horas` that never got a payment session."""
+    return list(Encomenda.objects.filter(
+        estado='pendente', data_encomenda__lt=_limite_abandono(horas), pagamento__isnull=True,
+    ).values_list('id', flat=True))
+
+def cancelar_se_abandonada(encomenda_id: int, horas: int = 24):
+    """Cancel the order if it is still pending, old enough and without a payment; else None.
+
+    The order row lock is the one payment-session code takes before saving a Pagamento,
+    so a retry that is creating a session either finished first (and the order is kept)
+    or finds the order cancelled. No Stripe call is made: there is no session.
+    """
+    with transaction.atomic():
+        encomenda = (Encomenda.objects.select_for_update()
+                     .filter(pk=encomenda_id, estado='pendente', data_encomenda__lt=_limite_abandono(horas))
+                     .first())
+        if encomenda is None or Pagamento.objects.filter(encomenda_id=encomenda_id).exists():
+            return None
+        return cancelar_encomenda(encomenda_id, f'limpeza: sem pagamento há mais de {horas} h')[1]
 
 
 # ── Expiração do pagamento (SEC-04) ────────────────────────────────────────

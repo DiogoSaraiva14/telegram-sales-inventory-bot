@@ -11,7 +11,8 @@ Code changes since import, in order:
 1. **Refactor (behavior-preserving):** split the original 1,061-line bot.py into the telegram_bot/ package and core/services.py.
 2. **Callback answers:** each callback query is now answered exactly once. Before, the bot acknowledged every button press and then tried to answer again with an alert (no stock, access denied, invalid request), which Telegram rejects. Handlers that do slow work (Stripe checkout, product photo upload, admin status change with customer notification) answer before that work, then report the result by editing or sending a message.
 3. **Photo fallback:** the product screen now survives a missing or failed photo: it sends the photo before deleting the old screen and otherwise shows the text screen with "(Imagem indisponível)" and the same buttons.
-4. **Duplicate-safe checkout (migration 0008):** one Confirm screen creates at most one order, and order creation is a single transaction that also refuses a sale on insufficient stock. Retries recover or replace the order's Stripe Checkout Session safely (SECURITY.md SEC-02, SEC-03, SEC-13). If an order is cancelled while its payment session is being prepared, and the cancellation commits before the session is saved, no link is shown. There is still a short gap: a cancellation that commits after the session is saved but before the payment screen is sent does not stop the link (SECURITY.md SEC-03). See SECURITY.md, SEC-03 and SEC-13.
+4. **Duplicate-safe checkout (migration 0008):** one Confirm screen creates at most one order, and order creation is a single transaction that also refuses a sale on insufficient stock. Retries recover or replace the order's Stripe Checkout Session safely (SECURITY.md SEC-02, SEC-03, SEC-13). If an order is cancelled while its payment session is being prepared, and the cancellation commits before the session is saved, no link is shown. A later admin cancellation expires the stored session, so a link that still reaches the customer cannot be paid (SEC-06). See SECURITY.md, SEC-03 and SEC-13.
+5. **Security fixes:** SEC-01 to SEC-13 are fixed. SECURITY.md lists each fix and what it does not cover.
 
 **Tests:** telegram_bot/tests.py (mock-only) covers callback routing, the admin gate, single answers, the checkout handler branches and the customer order-detail screen (SEC-12). core/tests.py runs on PostgreSQL. It covers order reservation, payment-session recovery and replacement, the unchanged webhook, two end-to-end handler tests, and three threaded concurrency tests. Those prove the product row lock and the order-row lock that a concurrent cancellation takes. Stripe and Telegram are mocked; nothing has been run against a live bot or Stripe.
 
@@ -44,7 +45,9 @@ These steps match how the checks were run on Windows with Python 3.13 and Postgr
 
 ## Running and project layout
 
-Start the bot with `python bot.py`. It loads .env, sets up Django, then starts polling. Run the Django admin and Stripe webhook separately with `python manage.py runserver`.
+Start the bot with `python bot.py`. It loads .env, sets up Django, writes logs to the console and to `logs/bot.log` (rotated daily, 14 days kept), then starts polling. Run the Django admin and Stripe webhook separately with `python manage.py runserver`.
+
+Schedule `python manage.py cancelar_encomendas_abandonadas` (for example hourly, with cron or Task Scheduler). It cancels pending orders older than 24 hours that never got a payment session, and returns their stock (`--horas` changes the threshold).
 
 ```
 bot.py                     entry point (env, django.setup(), logging, start polling)

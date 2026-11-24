@@ -3,12 +3,9 @@
 Status: started as a static review of the imported source snapshot. Since then, automated tests have been added for the fixed findings (SEC-02, SEC-03, SEC-13). They run on PostgreSQL with Telegram and Stripe mocked; see README.md. No runtime exploit checks, dependency audit, or deployment review have been run. Priorities below are engineering urgency, not CVSS scores or claims of demonstrated exploitation.
 
 **Finding status (2026-11-24):**
-- **Fixed:** SEC-01, SEC-02 (bot checkout), SEC-04 (expired sessions), SEC-05, SEC-06, SEC-07, SEC-09, SEC-10, SEC-12 and SEC-13.
-- **Mostly fixed:**
-  - SEC-03: orders that never got a Stripe session hold stock until an admin cancels them.
-  - SEC-08: log retention and access are not defined yet.
-- **Partly addressed:** SEC-11. Checkout no longer re-saves products, but other saves still re-encode images.
+- **Fixed:** SEC-01 to SEC-13. Each section below lists what it does not cover.
 - **Open:** none of SEC-01 to SEC-13.
+- **Caveat:** nothing has been run against live Telegram or Stripe; every check uses mocks and a local PostgreSQL.
 
 ## Trust boundaries
 
@@ -52,7 +49,7 @@ Originally: order creation used separate writes, and stock was read early and cl
 
 ### SEC-03 — Checkout failures can strand pending orders and stock (High priority)
 
-**Status: mostly fixed.**
+**Status: fixed (2026-11-24).**
 - **Order-creation failures:** they now roll back completely and show "❌ Não foi possível registar a encomenda. Tenta novamente.", with a retry button that carries the same confirmation token.
 - **Stripe failures:** they show the payment-link failure screen with a retry button.
 - **Recovery:** a retry recovers or creates the order's Stripe Checkout Session.
@@ -62,7 +59,7 @@ Originally: order creation used separate writes, and stock was read early and cl
   - A completed session waiting for the webhook gets a "don't pay again" screen and is never replaced.
 - **Missing product image:** checkout no longer fails, because stock is decremented with an `update()` and never calls `Produto.save()`.
 - **Still open:**
-  - an order whose Stripe session was never created (every attempt failed and the customer gave up) still holds its stock; no sweep releases it (see SEC-04);
+  - **orders that never got a Stripe session** (every attempt failed and the customer gave up) are cancelled after 24 hours by `python manage.py cancelar_encomendas_abandonadas`. The cancellation uses the shared cancel operation, so the stock is returned, an audit row is written and the customer is messaged. The command must be scheduled with cron or Task Scheduler; it re-checks under the order lock, so an order whose retry is saving a session is kept;
   - a rendering error after a successful payment-session save leaves no reply, but a retry recovers it;
   - **cancellations that commit before the session is saved** are handled: the bot locks the order row and re-checks it, so no link is shown;
   - **delivery gap (closed by SEC-06):** a link that reaches the customer after an admin cancellation is already expired, because cancelling expires the stored session first;
@@ -77,7 +74,7 @@ Product detail (telegram_bot/handlers/customer.py `produto_detalhe`) is fixed: i
 - After the commit, the customer gets the existing "cancelada" Telegram message.
 - Events for a replaced session id, a payment that is no longer `pendente`, or an order that is no longer `pendente` change no stock; a duplicate event therefore changes nothing.
 - A retry of a cancelled order gets no new session. Replacing an expired session (D19) now happens only if the customer retries before the expiry webhook arrives.
-- **Still open:** an order with no Stripe session at all holds its stock until an admin cancels it; releasing that needs a scheduled sweep. The reused message ends with "Se não solicitaste este cancelamento, contacta o suporte.", which may read oddly for an expiry.
+- An order with no Stripe session at all is released by the scheduled sweep (SEC-03), not by this webhook. The reused message ends with "Se não solicitaste este cancelamento, contacta o suporte.", which may read oddly for an expiry.
 
 ### SEC-05 — Webhook idempotency is not atomic (High priority)
 
@@ -120,7 +117,7 @@ The Telegram /start message formats the stored user name as Markdown (telegram_b
 
 security/decorators.py lines 65–72 logs Telegram user IDs and usernames. telegram_bot/ (guards.py, notifications.py) and core/views.py also log Telegram identifiers during notifications and administrative actions. Minimize or pseudonymize identifiers and define log retention/access.
 
-**Status: mostly fixed (2026-11-24).**
+**Status: fixed (2026-11-24).**
 - User-level log lines now carry `utilizador=<label>`: rate limit, unauthorized admin access, actions, expired sessions, blocked users and invalid callbacks.
   - The label is `security/sanitization.py` `pseudonimo()`, the first 12 hex characters of an HMAC-SHA256 of the Telegram id keyed with `SECRET_KEY`.
   - It is stable, so one user's lines can be correlated, but it cannot be reversed without the key. A plain hash would not hide short numeric ids.
@@ -128,9 +125,11 @@ security/decorators.py lines 65–72 logs Telegram user IDs and usernames. teleg
 - Usernames are no longer logged. Notification logs keep only the order id, which leads to the customer in the database.
 - The bot sets the `httpx` logger to WARNING, because at INFO it logs every request URL, and Telegram URLs contain the bot token.
 - The webhook logs only the exception type when a Telegram send fails, for the same reason.
-- **Still open:**
-  - log retention and access, which depend on where the project is deployed;
-  - audit rows in the database (`RegistoAuditoria`), which still hold customer names and Telegram ids in their descriptions and are visible to admins.
+- **Retention and access (owner decision, 2026-11-24):**
+  - `python bot.py` writes `logs/bot.log` (git-ignored) as well as the console. The file is rotated at midnight and the last 14 days are kept (`telegram_bot/app.py` `configurar_logs`).
+  - Only the operator account that runs the bot should be able to read the folder: on Linux, `chmod 700 logs`; on Windows, the user profile's default permissions.
+  - The Django server keeps logging to its console only, so its retention is the hosting platform's.
+- **Accepted:** audit rows in the database (`RegistoAuditoria`) still hold customer names and Telegram ids in their descriptions, because admins need them. They are visible only to admins.
 
 ### SEC-09 — Rate limiting and session state are process-local (Medium priority)
 
@@ -167,6 +166,17 @@ core/admin.py lines 70–84 exposes editable order-line fields while Encomenda.t
 ### SEC-11 — Product images are reprocessed on ordinary model saves (Medium priority)
 
 core/models.py lines 48–78 resizes and re-encodes the stored image whenever Produto.save() runs, including stock or active-state updates. Repeated saves can degrade image quality and rely on local filesystem paths. Process only newly uploaded images and use the configured storage interface.
+
+**Status: fixed (2026-11-24).**
+- `Produto.save()` processes the image only when a new file is assigned, that is, one not yet in storage.
+  - It crops the image to a centred square, resizes it to 800×800 and encodes it once as JPEG, in memory.
+  - The configured storage then writes the result. No local filesystem path is used.
+- Stock, name and state saves leave the stored file untouched.
+- The bot opens product photos through the storage API.
+- **Not covered:**
+  - uploads are validated only by Django's `ImageField`, which checks that Pillow can open them, and by Pillow's decompression-bomb limit;
+  - there is no size limit beyond Django's defaults;
+  - images saved before this change keep their earlier encoding.
 
 ### SEC-12 — Input validation allows known callback prefixes, but route names have drifted (Medium priority)
 

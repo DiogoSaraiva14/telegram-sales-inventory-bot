@@ -1,3 +1,7 @@
+import os
+from io import BytesIO
+
+from django.core.files.base import ContentFile
 from django.db import models
 from django.utils import timezone
 from PIL import Image as PilImage
@@ -51,20 +55,31 @@ class Produto(models.Model):
     _IMAGEM_TAMANHO = (800, 800)
 
     def save(self, *args, **kwargs):
+        # SEC-11: only a newly assigned file (not yet in storage) is processed, so stock,
+        # name or state saves never re-encode the stored image.
+        if self.imagem and not self.imagem._committed:
+            self._preparar_imagem()
         super().save(*args, **kwargs)
-        if self.imagem:
-            self._redimensionar_imagem()
 
-    def _redimensionar_imagem(self):
-        img = PilImage.open(self.imagem.path)
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
+    def _preparar_imagem(self):
+        """Crop to a centred square, resize and encode as JPEG once, in memory.
+
+        The result replaces the upload and is written by the configured storage when the
+        model saves, without using a local filesystem path.
+        """
+        ficheiro = self.imagem.file
+        ficheiro.seek(0)
+        with PilImage.open(ficheiro) as original:
+            img = original.convert('RGB')
         w, h   = img.size
         lado   = min(w, h)
         img    = img.crop(((w - lado) // 2, (h - lado) // 2,
                            (w + lado) // 2, (h + lado) // 2))
         img    = img.resize(self._IMAGEM_TAMANHO, PilImage.LANCZOS)
-        img.save(self.imagem.path, 'JPEG', quality=85, optimize=True)
+        saida = BytesIO()
+        img.save(saida, 'JPEG', quality=85, optimize=True)
+        nome = os.path.splitext(os.path.basename(self.imagem.name))[0] + '.jpg'
+        self.imagem = ContentFile(saida.getvalue(), name=nome)
 
     def __str__(self):
         return self.nome

@@ -361,7 +361,7 @@ class PhotoFallbackTests(SimpleTestCase):
     async def _show(self, image_path, send_photo_error=None, delete_error=None):
         produto = SimpleNamespace(
             id=7, nome="SSD", preco=Decimal("50.00"), stock_atual=3, descricao=None,
-            categoria="ssd", imagem=SimpleNamespace(path=image_path),
+            categoria="ssd", imagem=SimpleNamespace(open=lambda mode: open(image_path, mode)),
         )
         query = MagicMock()
         query.answer = AsyncMock()
@@ -597,3 +597,32 @@ class AdminStatusHandlerTests(SimpleTestCase):
             await admin._mudar_estado_e_notificar(query, MagicMock(), 1, 5, "enviada", "ENVIAR")
         self.assertIn("não encontrada ou estado inválido", responder.await_args.args[2])
         notificar.assert_not_awaited()
+
+
+class LogRetentionTests(SimpleTestCase):
+    """SEC-08: bot logs rotate daily and keep 14 days; httpx stays quiet."""
+
+    def test_bot_logs_rotate_daily_and_keep_14_days(self):
+        import logging
+        import shutil
+        from logging.handlers import TimedRotatingFileHandler
+        from pathlib import Path
+        from telegram_bot.app import configurar_logs
+        raiz, httpx_log = logging.getLogger(), logging.getLogger("httpx")
+        antes = (raiz.handlers[:], raiz.level, httpx_log.level)
+        pasta = Path(tempfile.mkdtemp()) / "logs"
+        self.addCleanup(shutil.rmtree, pasta.parent, ignore_errors=True)
+        try:
+            configurar_logs(pasta)
+            ficheiros = [h for h in raiz.handlers if isinstance(h, TimedRotatingFileHandler)]
+            self.assertEqual(len(ficheiros), 1)
+            self.assertEqual((ficheiros[0].when, ficheiros[0].backupCount), ("MIDNIGHT", 14))
+            self.assertEqual(Path(ficheiros[0].baseFilename), pasta / "bot.log")
+            self.assertEqual(httpx_log.level, logging.WARNING)
+        finally:
+            for handler in raiz.handlers:
+                if handler not in antes[0]:
+                    handler.close()
+            raiz.handlers[:] = antes[0]
+            raiz.setLevel(antes[1])
+            httpx_log.setLevel(antes[2])

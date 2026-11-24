@@ -70,7 +70,7 @@ async def produto_detalhe(query, context, data, user_id):
         return
     # Send the photo before deleting the old screen, so a failure still leaves a usable message.
     try:
-        with open(p.imagem.path, 'rb') as foto:
+        with p.imagem.open('rb') as foto:  # through the storage API (SEC-11)
             await context.bot.send_photo(
                 chat_id=query.message.chat_id,
                 photo=foto,

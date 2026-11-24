@@ -2,6 +2,8 @@
 import os
 import asyncio
 import logging
+from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
 
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler
 
@@ -12,6 +14,23 @@ logger = logging.getLogger(__name__)
 
 # Settings the bot itself needs; Django's own required ones are checked in config/settings.py.
 VARIAVEIS_OBRIGATORIAS = ("TELEGRAM_TOKEN", "STRIPE_SECRET_KEY", "STRIPE_SUCCESS_URL", "STRIPE_CANCEL_URL")
+
+
+LOG_DIAS = 14  # owner decision, SEC-08 (2026-11-24)
+
+
+def configurar_logs(pasta: Path) -> None:
+    """Log to the console and to <pasta>/bot.log, rotated at midnight and kept LOG_DIAS days (SEC-08)."""
+    pasta.mkdir(exist_ok=True)
+    ficheiro = TimedRotatingFileHandler(pasta / "bot.log", when="midnight", backupCount=LOG_DIAS, encoding="utf-8")
+    logging.basicConfig(
+        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+        level=logging.INFO,
+        handlers=[logging.StreamHandler(), ficheiro],
+        force=True,
+    )
+    # httpx logs every request URL at INFO, and Telegram URLs contain the bot token.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def variaveis_em_falta(ambiente=os.environ):
