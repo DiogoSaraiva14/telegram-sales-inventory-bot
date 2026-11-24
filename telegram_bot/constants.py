@@ -45,3 +45,13 @@ ESTADO_EMOJI = {
     'entregue': '📬',
     'cancelada': '❌',
 }
+
+# ── Checkout (SEC-13; owner decisions D7, D8, D14, D21) ───────────────────
+
+MENSAGEM_ECRA_EXPIRADO = "Este ecrã expirou. Abre o produto novamente para continuar."
+MENSAGEM_FALHA_REGISTO = "❌ Não foi possível registar a encomenda. Tenta novamente."
+MENSAGEM_JA_REGISTADA = "Esta encomenda já foi registada."
+MENSAGEM_PAGAMENTO_A_CONFIRMAR = (
+    "⏳ O pagamento da encomenda #{id} está a ser confirmado. "
+    "Não voltes a pagar. Receberás uma mensagem quando a confirmação chegar."
+)

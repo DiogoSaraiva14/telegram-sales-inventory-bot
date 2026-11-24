@@ -96,6 +96,8 @@ class Encomenda(models.Model):
     estado          = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='pendente')
     total           = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     notas           = models.TextField(blank=True, null=True)   # ✅ NOVO — notas internas do admin
+    # Nonce do ecrã de confirmação do bot: um ecrã cria no máximo uma encomenda (SEC-13).
+    chave_confirmacao = models.CharField(max_length=16, null=True, blank=True, unique=True, editable=False)
 
     def __str__(self):
         return f"Encomenda #{self.id} — {self.utilizador.nome}"
@@ -115,6 +117,8 @@ class LinhaEncomenda(models.Model):
     quantidade     = models.IntegerField()
     preco_unitario = models.DecimalField(max_digits=10, decimal_places=2)
     subtotal       = models.DecimalField(max_digits=10, decimal_places=2)
+    # Nome do produto no momento da encomenda, para pedidos Stripe repetíveis.
+    nome_produto   = models.CharField(max_length=200, null=True, blank=True, editable=False)
 
     def save(self, *args, **kwargs):
         self.subtotal = self.quantidade * self.preco_unitario

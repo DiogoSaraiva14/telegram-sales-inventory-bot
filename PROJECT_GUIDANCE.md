@@ -1,6 +1,12 @@
 # Project guidance
 
-Status: imported baseline under overhaul. The first step, a behavior-preserving split of bot.py, is done; business behavior is unchanged apart from answering each Telegram callback query once. LocalReach remains the user's main development priority; this Telegram project is being reviewed as a bounded portfolio candidate.
+Status: imported baseline under overhaul. Done so far:
+- a behavior-preserving split of bot.py;
+- answering each Telegram callback query once;
+- the product-photo fallback (both committed);
+- duplicate-safe checkout with recoverable Stripe sessions (on branch `codex/checkout-change-2`).
+
+The business rules decided for checkout are recorded below. LocalReach remains the user's main development priority; this Telegram project is being reviewed as a bounded portfolio candidate.
 
 ## Product purpose
 
@@ -14,9 +20,20 @@ The strongest potential portfolio story is an end-to-end order and inventory wor
 - Django admin and a CSRF-exempt, Stripe-signature-verified webhook are configured.
 - The database models cover users, products, orders, order lines, payments, stock movements, and audit records.
 - The imported source used a single large callback handler in bot.py. It has since been split into the telegram_bot/ package (behavior-preserving refactor); Django admin operations remain separate.
-- core/tests.py contains only the default empty TestCase scaffold.
+- At import, core/tests.py contained only the default empty TestCase scaffold. It now holds the PostgreSQL checkout tests (see README.md).
 - No deployment instructions, environment example, CI workflow, or license were present in the imported source.
 - Product images and bytecode were excluded from this repository.
+
+## Decisions recorded for duplicate-safe checkout (2026-11-22)
+
+- **One order per screen:** one Confirm screen creates at most one order. A repeat tap shows "Esta encomenda já foi registada." and recovers the payment link.
+- **Expiry:** unused Confirm buttons expire 30 minutes after the screen was drawn. Buttons from before the change are treated as expired. An existing order is never blocked by expiry.
+- **Stock:** reserved when the order is created. Checkout is refused when stock is insufficient, never clamped at zero.
+- **Audit:** written in the same transaction as the order.
+- **Price:** charged as saved on the order (price snapshot), and the product name is snapshotted on the order line. Stripe gets no product description.
+- **Expired sessions:** an expired, unpaid Stripe Checkout Session is replaced with a new one. A completed session waiting for the webhook is never replaced; the customer is told not to pay again.
+- **Still open:** releasing stock for abandoned or expired orders (SEC-04).
+- **Deferred to SEC-06 (owner decision, 2026-11-22):** expiring the Stripe session when an order is cancelled, refunds, and how the webhook treats payments for cancelled orders. Until then, a cancelled order may still be paid and confirmed, so the project stays an unvalidated portfolio project, not production-ready.
 
 ## Business rules to confirm before redesign
 

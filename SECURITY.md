@@ -1,6 +1,6 @@
 # Security and code-review record
 
-Status: static review of the imported source snapshot only. No tests, runtime exploit checks, dependency audit, or deployment review were run. Priorities below are engineering urgency, not CVSS scores or claims of demonstrated exploitation.
+Status: started as a static review of the imported source snapshot. Since then, automated tests have been added for the fixed findings (SEC-02, SEC-03, SEC-13). They run on PostgreSQL with Telegram and Stripe mocked; see README.md. No runtime exploit checks, dependency audit, or deployment review have been run. Priorities below are engineering urgency, not CVSS scores or claims of demonstrated exploitation.
 
 ## Trust boundaries
 
@@ -28,11 +28,33 @@ config/settings.py lines 14–20 permits SECRET_KEY to be absent, defaults DEBUG
 
 ### SEC-02 — Order and stock writes are not atomic (High priority)
 
-core/services.py `criar_encomenda` creates an order, creates a line, decrements stock, and writes a stock movement as separate database operations. The stock value comes from an earlier read and is clamped with max(0, ...). Failures can leave partial state, and concurrent checkouts can both pass the prior stock check. Put the invariant in one transactional service with a conditional decrement or row lock.
+**Status: fixed for bot checkout.**
+- `core/services.py` `reservar_encomenda` writes the order, line, stock decrement, stock movement and audit row in one transaction.
+- It locks the product row (`SELECT … FOR UPDATE`) and refuses the sale when stock is below 1.
+- The PostgreSQL tests T1 and T2 (`core/tests.py`) show two concurrent checkouts waiting on that lock.
+- Still open: Django admin and Telegram admin stock and order changes (SEC-06, SEC-10).
+
+Originally: order creation used separate writes, and stock was read early and clamped with max(0, ...).
 
 ### SEC-03 — Checkout failures can strand pending orders and stock (High priority)
 
-telegram_bot/handlers/customer.py `confirmar_encomenda` creates the order and consumes stock before creating Stripe Checkout. The exception path displays a support message but does not cancel the order or restore stock. Also define recovery if Stripe creates the session but saving the Pagamento row fails. Failures before the Stripe call (creating the user, order, line, stock movement or audit row) are not caught, so after the button press is acknowledged the customer gets no result message. Checkout also fails when a product's image file is missing: `criar_encomenda` decrements stock through `Produto.save()`, which reopens and resizes the image, after the order, line and stock change are saved but before the stock movement (planned fix: the duplicate-checkout change for SEC-13). Product detail (telegram_bot/handlers/customer.py `produto_detalhe`) is fixed: it sends the photo before deleting the old message, and on a missing file, upload error or timeout it edits the old message into the text screen with "(Imagem indisponível)" and the same buttons.
+**Status: mostly fixed.**
+- **Order-creation failures:** they now roll back completely and show "❌ Não foi possível registar a encomenda. Tenta novamente.", with a retry button that carries the same confirmation token.
+- **Stripe failures:** they show the payment-link failure screen with a retry button.
+- **Recovery:** a retry recovers or creates the order's Stripe Checkout Session.
+  - The first attempt uses one stable idempotency key, and each replacement of an expired session uses a new key.
+  - The success and cancel URLs are part of the key.
+  - The `Pagamento` row is saved before the link is shown.
+  - A completed session waiting for the webhook gets a "don't pay again" screen and is never replaced.
+- **Missing product image:** checkout no longer fails, because stock is decremented with an `update()` and never calls `Produto.save()`.
+- **Still open:**
+  - abandoned orders still hold their stock (SEC-04);
+  - a rendering error after a successful payment-session save leaves no reply, but a retry recovers it;
+  - **cancellations that commit before the session is saved** are handled: the bot locks the order row and re-checks it, so no link is shown;
+  - **delivery gap:** the bot releases the order lock once the session is saved, then reads the order line and sends the payment screen. An admin cancellation that commits in that gap (milliseconds, plus Telegram's send time) does not stop the link from reaching the customer. The owner accepted this as deferred to SEC-06, along with expiring the session on cancellation, refunds, and how the webhook treats payments for cancelled orders;
+  - **an order cancelled after its payment link was shown** can still be paid, and the unchanged webhook then confirms it (SEC-06).
+
+Product detail (telegram_bot/handlers/customer.py `produto_detalhe`) is fixed: it sends the photo before deleting the old message, and on a missing file, upload error or timeout it edits the old message into the text screen with "(Imagem indisponível)" and the same buttons.
 
 ### SEC-04 — Expired Checkout does not resolve order or inventory (High priority)
 
@@ -72,11 +94,19 @@ telegram_bot/keyboards.py `teclado_minhas_encomendas` emits user_encomenda_<id> 
 
 ### SEC-13 — Repeated checkout confirmation can create duplicate orders (High priority)
 
-telegram_bot/handlers/customer.py `confirmar_encomenda` acknowledges the button press, then creates the order and calls Stripe. The confirmation button stays active until the message is edited, and no in-flight or idempotency guard exists, so a second tap can create a second order and consume more stock. The original bot.py had the same behavior. Disable the button before processing and add a guard keyed on user and product, or make order creation idempotent.
+**Status: fixed.**
+- Each Confirm screen carries its own token: `confirmar_encomenda_<nonce>_<ts>_<produto_id>`, exactly 64 bytes at the largest id.
+- The nonce is stored on the order under a unique constraint (migration 0008), so one confirmation screen creates at most one order. This holds for repeated, queued, concurrent and post-restart taps.
+- **Repeat taps:** a repeat tap finds the existing order first and gets "Esta encomenda já foi registada." plus payment recovery, whatever the button's age.
+- **Expiry and old buttons:**
+  - Unused tokens expire 30 minutes after the screen was drawn. The age is measured when the bot processes the tap, so a tap queued during a long outage can be rejected.
+  - Buttons without a token, from before the change, are treated as expired.
+- **What did not work:** an in-memory guard or disabling the button would not have worked, because python-telegram-bot 22.7 processes updates one at a time by default, so a second tap waits and then runs again.
+- The original recommendation, a guard keyed on user and product, was wrong: it would also block a real second purchase.
 
 ## Additional review notes
 
-- core/tests.py is only an empty TestCase scaffold. No automated tests or CI were present in the imported snapshot.
+- The imported snapshot had no automated tests or CI. Tests now exist (telegram_bot/tests.py, core/tests.py); CI is still absent.
 - Stripe expiry, refund, asynchronous-payment, and retry semantics are not documented.
 - The source stores Telegram identifiers and names. The phone field exists in the model; no population path was observed in the reviewed bot code.
 - The project has no documented data retention, privacy notice, upload limits, or deployment threat model.

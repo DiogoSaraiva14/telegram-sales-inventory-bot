@@ -32,14 +32,17 @@ Staff can also mutate products, stock, orders, payments, and audit data through 
 - telegram_bot/guards.py: ADMIN_TELEGRAM_IDS, session timeout, and blocked-account decorators.
 - telegram_bot/notifications.py: order-status notifications sent through the running bot.
 - telegram_bot/tests.py: callback routing and admin-gate tests (no database needed).
-- core/services.py: async ORM operations used by the bot (orders, stock, Stripe Checkout creation, cancellation, users, audit). Moved unchanged from bot.py; not yet transactional.
+- core/services.py: ORM operations used by the bot.
+  - Checkout is transactional: `reservar_encomenda` locks the product row and writes the order, line, stock, movement and audit together. `garantir_sessao_pagamento` recovers or creates the order's Stripe Checkout Session with idempotency keys and saves it before the link is shown.
+  - The other helpers (admin status changes, cancellation, users, audit) were moved unchanged and are not yet transactional.
+- telegram_bot/confirmacao.py: the Confirm-button token (nonce, screen time and product id) and its 30-minute expiry.
 - config/: Django settings, URL configuration, WSGI, and ASGI entrypoints.
 - core/models.py: Utilizador, Produto, Encomenda, LinhaEncomenda, Pagamento, MovimentoStock, and RegistoAuditoria.
 - core/views.py: signed Stripe webhook plus payment success/expiry handling and Telegram payment confirmation.
 - core/admin.py: Django admin listings, edit forms, and bulk actions.
 - security/sanitization.py: Telegram callback prefix checks and value parsers.
 - security/decorators.py: process-local rate limiter, admin decorator, and action logging.
-- core/migrations/: seven migrations are present.
+- core/migrations/: eight migrations are present. 0008 adds `Encomenda.chave_confirmacao` (unique, nullable) and `LinhaEncomenda.nome_produto`.
 - requirements.txt: pinned runtime packages; no separate development dependency manifest was present.
 
 ## Current domain flows
@@ -48,7 +51,10 @@ Staff can also mutate products, stock, orders, payments, and audit data through 
 
 1. /start creates a Utilizador row if one does not exist.
 2. The user selects a product and confirms a one-item order.
-3. core/services.py creates the order and line, reduces product stock, writes a stock movement, then requests a Stripe Checkout session and creates a Pagamento row.
+3. The Confirm button carries a one-time token.
+   - `reservar_encomenda` creates the order, its line, the stock decrement, the stock movement and the audit row in one transaction, at most once per token.
+   - Then `garantir_sessao_pagamento` creates the Stripe Checkout Session and saves the Pagamento row before the payment link is shown.
+   - A repeat tap or retry finds the same order and recovers or replaces its session.
 4. Stripe completion marks payment paid and order confirmed. Expiration marks payment failed.
 
 ### Admin
@@ -63,7 +69,7 @@ The current order flow creates quantity one and a one-line order. This is observ
 
 ## Architecture review notes
 
-- State-changing ORM code now lives in core/services.py, but it is not yet transactional. That layer should own order, inventory, payment, and audit transactions.
+- Bot checkout is now transactional in core/services.py. Admin order and stock changes are not yet: that layer should own them too (SEC-06, SEC-10).
 - Make order creation, stock reservation, payment-session persistence, and cancellation atomic or explicitly compensating.
 - Represent payment and order state transitions in one place; both admin interfaces should call the same operations.
 - Make webhook processing idempotent across concurrent/retried events and separate payment state changes from notification delivery.

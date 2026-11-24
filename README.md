@@ -6,7 +6,14 @@ A Telegram interface for a computer-parts catalog, backed by Django and PostgreS
 
 **Not yet validated for production or CV claims.** This standalone private repository contains the source snapshot imported from GitLab, now being overhauled. main holds the imported project and later overhaul work.
 
-The only code change since import is a behavior-preserving split of the original 1,061-line bot.py into the telegram_bot/ package and core/services.py. One bug fix rides with it: each callback query is now answered exactly once. Before, the bot acknowledged every button press and then tried to answer again with an alert (no stock, access denied, invalid request), which Telegram rejects. Handlers that do slow work (Stripe checkout, product photo upload, admin status change with customer notification) answer before that work, then report the result by editing or sending a message. Known gaps carried over unchanged from the original bot: tapping Confirm again while checkout is running can create a second order, and failures outside the Stripe call (creating the user, order or audit row) leave the customer without a result message. Checkout also fails when a product's image file is missing (planned fix: the duplicate-checkout change for SEC-13). The product screen itself now survives a missing or failed photo: it sends the photo before deleting the old screen and otherwise shows the text screen with "(Imagem indisponível)" and the same buttons. See SECURITY.md, SEC-03 and SEC-13. telegram_bot/tests.py covers callback routing, the admin gate, single answers, and the known order-detail bug (SEC-12, an expected failure). No end-to-end runtime checks have been run against Telegram, Stripe, or PostgreSQL. core/tests.py is still an empty scaffold.
+Code changes since import, in order:
+
+1. **Refactor (behavior-preserving):** split the original 1,061-line bot.py into the telegram_bot/ package and core/services.py.
+2. **Callback answers:** each callback query is now answered exactly once. Before, the bot acknowledged every button press and then tried to answer again with an alert (no stock, access denied, invalid request), which Telegram rejects. Handlers that do slow work (Stripe checkout, product photo upload, admin status change with customer notification) answer before that work, then report the result by editing or sending a message.
+3. **Photo fallback:** the product screen now survives a missing or failed photo: it sends the photo before deleting the old screen and otherwise shows the text screen with "(Imagem indisponível)" and the same buttons.
+4. **Duplicate-safe checkout (migration 0008):** one Confirm screen creates at most one order, and order creation is a single transaction that also refuses a sale on insufficient stock. Retries recover or replace the order's Stripe Checkout Session safely (SECURITY.md SEC-02, SEC-03, SEC-13). If an order is cancelled while its payment session is being prepared, and the cancellation commits before the session is saved, no link is shown. There is still a short gap: a cancellation that commits after the session is saved but before the payment screen is sent does not stop the link (SECURITY.md SEC-03). See SECURITY.md, SEC-03 and SEC-13.
+
+**Tests:** telegram_bot/tests.py (mock-only) covers callback routing, the admin gate, single answers, the checkout handler branches and the known order-detail bug (SEC-12, an expected failure). core/tests.py runs on PostgreSQL. It covers order reservation, payment-session recovery and replacement, the unchanged webhook, two end-to-end handler tests, and three threaded concurrency tests. Those prove the product row lock and the order-row lock that a concurrent cancellation takes. Stripe and Telegram are mocked; nothing has been run against a live bot or Stripe.
 
 ## Running and project layout
 
@@ -25,13 +32,20 @@ telegram_bot/
   handlers/callbacks.py    callback validation, routing, admin gate
   handlers/customer.py     catalog, product, orders, checkout, help
   handlers/admin.py        products, stock, orders, users, audit
-  tests.py                 routing tests: python manage.py test telegram_bot
+  confirmacao.py           Confirm-button token: format, parser, 30-minute expiry
+  tests.py                 mock-only tests: python manage.py test telegram_bot
 core/                      Django app: models, admin, Stripe webhook, services.py (bot ORM operations)
 security/                  callback allowlist, input parsers, rate limit, action logging
 config/                    Django settings and URLs
 ```
 
-The routing tests need no database, but Django settings still need `SECRET_KEY` and `DB_NAME` to be set (any placeholder works).
+**Running the tests:**
+- `python manage.py test telegram_bot` needs no database; `SECRET_KEY` and `DB_NAME` must still be set, and any placeholder works.
+- `python manage.py test core telegram_bot` needs PostgreSQL. Use a local role with only `LOGIN` and `CREATEDB` (for example `telegram_bot_test`), and put `SECRET_KEY` and the `DB_*` variables in a git-ignored `.env`. Django creates and drops `test_<DB_NAME>` itself.
+
+**Deploying this change:**
+- Run `python manage.py migrate` (0008 adds two nullable columns) before starting the new bot code.
+- Changing `STRIPE_SUCCESS_URL` or `STRIPE_CANCEL_URL` is safe at any time: they are part of each Stripe idempotency key, and sessions already recorded keep their URLs.
 
 ## Features observed in source
 

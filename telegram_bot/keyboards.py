@@ -67,10 +67,27 @@ def teclado_minhas_encomendas(encomendas):
     buttons.append([InlineKeyboardButton("🔙 Menu Principal", callback_data="menu_inicio")])
     return InlineKeyboardMarkup(buttons)
 
-def teclado_confirmar_encomenda(produto):
+def teclado_confirmar_encomenda(produto, callback_confirmar):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Confirmar", callback_data=f"confirmar_encomenda_{produto.id}")],
+        [InlineKeyboardButton("✅ Confirmar", callback_data=callback_confirmar)],
         [InlineKeyboardButton("❌ Cancelar",  callback_data=f"produto_{produto.id}")],
+    ])
+
+def teclado_ecra_expirado(produto_id):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Voltar ao Produto", callback_data=f"produto_{produto_id}")],
+    ])
+
+def teclado_falha_registo(callback_confirmar, categoria):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Tentar novamente", callback_data=callback_confirmar)],
+        [InlineKeyboardButton("🔙 Voltar aos produtos", callback_data=f"cat_{categoria}")],
+    ])
+
+def teclado_falha_pagamento(callback_confirmar):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Tentar novamente", callback_data=callback_confirmar)],
+        [InlineKeyboardButton("🛒 Ver Encomendas", callback_data="menu_encomendas")],
     ])
 
 def teclado_pagamento(payment_url):

@@ -11,7 +11,10 @@ from django.test import SimpleTestCase
 from telegram.error import BadRequest, TimedOut
 
 from security.sanitization import ALLOWED_EXACT, ALLOWED_PREFIXES, validar_callback
-from telegram_bot import keyboards
+from telegram_bot import confirmacao, keyboards
+from telegram_bot.constants import (
+    MENSAGEM_ECRA_EXPIRADO, MENSAGEM_FALHA_REGISTO, MENSAGEM_JA_REGISTADA, MENSAGEM_PAGAMENTO_A_CONFIRMAR,
+)
 from telegram_bot.handlers import admin, callbacks, customer
 from telegram_bot.handlers.callbacks import encontrar_rota
 
@@ -102,42 +105,207 @@ class KnownBugTests(SimpleTestCase):
                 validar_callback(button.callback_data)
 
 
-class CheckoutAcknowledgementTests(SimpleTestCase):
-    """The button spinner must stop before the slow Stripe request."""
+AGORA = 1_795_351_123
+NONCE = "21489ae5df01141f"
+URL = "https://checkout.example/cs_test_1"
 
-    async def _checkout(self, stripe_side_effect):
-        calls = []
-        query = MagicMock()
-        query.answer = AsyncMock(side_effect=lambda *a, **k: calls.append("answer"))
-        produto = SimpleNamespace(id=7, nome="SSD", preco=Decimal("50.00"), stock_atual=3)
-        encomenda = SimpleNamespace(id=1, total=Decimal("50.00"))
 
-        async def stripe(*args):
-            calls.append("stripe")
-            if stripe_side_effect:
-                raise stripe_side_effect
-            return "https://checkout.example/test"
+def _botoes(teclado):
+    return [(b.text, b.callback_data or b.url) for row in teclado.inline_keyboard for b in row]
 
-        wrapped = callbacks._RespostaUnica(query)
-        with patch.object(customer.services, "get_produto", AsyncMock(return_value=produto)), \
-             patch.object(customer.services, "get_or_create_utilizador", AsyncMock(return_value=(object(), False))), \
-             patch.object(customer.services, "criar_encomenda", AsyncMock(return_value=encomenda)), \
-             patch.object(customer.services, "registar_auditoria", AsyncMock()), \
-             patch.object(customer.services, "criar_sessao_stripe", stripe), \
-             patch.object(customer, "responder", AsyncMock(side_effect=lambda *a, **k: calls.append("responder"))):
-            await customer.confirmar_encomenda(wrapped, MagicMock(), "confirmar_encomenda_7", 99)
-            await wrapped.answer()  # the router's fallback must not send a second answer
-        return query, calls
 
-    async def test_answers_before_stripe(self):
-        query, calls = await self._checkout(None)
-        self.assertEqual(calls, ["answer", "stripe", "responder"])
-        query.answer.assert_awaited_once_with()
+class CheckoutHandlerTests(SimpleTestCase):
+    """Change 2 handler branches (brief §3.5, §3.7 H1–H14). Mock-only: no database."""
 
-    async def test_stripe_error_reported_by_message_not_second_answer(self):
-        query, calls = await self._checkout(RuntimeError("stripe down"))
-        self.assertEqual(calls, ["answer", "stripe", "responder"])
-        query.answer.assert_awaited_once_with()
+    def setUp(self):
+        self.calls = []
+        self.query = MagicMock()
+        self.query.from_user.id = 99
+        self.query.answer = AsyncMock(side_effect=lambda *a, **k: self.calls.append("answer"))
+        self.responder = AsyncMock(side_effect=lambda *a, **k: self.calls.append("responder"))
+        self.produto = SimpleNamespace(id=7, nome="SSD", preco=Decimal("50.00"), stock_atual=3, categoria="ssd")
+        self.encomenda = SimpleNamespace(id=5, total=Decimal("50.00"), utilizador=SimpleNamespace(telegram_id="99"))
+
+    def _cb(self, idade=0, chave=NONCE, produto_id=7):
+        return confirmacao.callback_confirmar(produto_id, chave, emitida_em=AGORA - idade)
+
+    async def _run(self, data, *, existente=None, reservar=None, garantir=("aberta", URL)):
+        self.reservar = AsyncMock(side_effect=lambda *a: self.calls.append("reservar") or (
+            _raise(reservar) if isinstance(reservar, Exception) else reservar or ("criada", self.encomenda)))
+        self.garantir = AsyncMock(side_effect=lambda *a: self.calls.append("garantir") or (
+            _raise(garantir) if isinstance(garantir, Exception) else garantir))
+        self.lookup = AsyncMock(return_value=existente)
+        self.get_produto = AsyncMock(return_value=self.produto)
+        wrapped = callbacks._RespostaUnica(self.query)
+        with patch.object(confirmacao, "agora", return_value=AGORA), \
+             patch.object(customer.services, "get_encomenda_por_chave", self.lookup), \
+             patch.object(customer.services, "get_produto", self.get_produto), \
+             patch.object(customer.services, "reservar_encomenda_async", self.reservar), \
+             patch.object(customer.services, "garantir_sessao_pagamento_async", self.garantir), \
+             patch.object(customer.services, "get_linhas_encomenda",
+                          AsyncMock(return_value=[SimpleNamespace(nome_produto="SSD")])), \
+             patch.object(customer, "responder", self.responder):
+            await customer.confirmar_encomenda(wrapped, MagicMock(), data, 99)
+            await wrapped.answer()  # the router's fallback must never send a second answer
+
+    def _ecra(self):
+        args, kwargs = self.responder.await_args
+        return args[2], _botoes(args[3]), kwargs.get("parse_mode", "Markdown")
+
+    # H1
+    def test_callback_is_exactly_64_bytes_at_max_id_and_round_trips(self):
+        data = confirmacao.callback_confirmar(9223372036854775807, NONCE, emitida_em=AGORA)
+        self.assertEqual(len(data.encode("utf-8")), 64)
+        self.assertEqual(validar_callback(data), data)
+        self.assertEqual(confirmacao.ler_callback(data),
+                         ("token", confirmacao.Confirmacao(NONCE, AGORA, 9223372036854775807)))
+        self.assertIs(encontrar_rota(data)[0], customer.confirmar_encomenda)
+        with self.assertRaises(ValueError):  # one byte more than Telegram allows
+            confirmacao.callback_confirmar(9223372036854775807, NONCE + "0", emitida_em=AGORA)
+
+    def test_timestamp_must_be_exactly_seven_base36_characters(self):
+        for ts in ("towlsj", "00towlsj", "0TOWLSJ"):
+            self.assertEqual(confirmacao.ler_callback(f"confirmar_encomenda_{NONCE}_{ts}_7"), ("invalido", None))
+
+    # H2
+    async def test_legacy_button_gets_stale_screen_without_services(self):
+        await self._run("confirmar_encomenda_7")
+        texto, botoes, parse_mode = self._ecra()
+        self.assertEqual(texto, MENSAGEM_ECRA_EXPIRADO)
+        self.assertEqual(botoes, [("🔙 Voltar ao Produto", "produto_7")])
+        self.assertIsNone(parse_mode)
+        self.lookup.assert_not_awaited()
+        self.reservar.assert_not_awaited()
+        self.query.answer.assert_awaited_once_with()
+
+    # H3
+    async def test_malformed_tokens_are_rejected_without_services(self):
+        for data in (f"confirmar_encomenda_{NONCE.upper()}_0towlsj_7", f"confirmar_encomenda_{NONCE[:-1]}_0towlsj_7",
+                     f"confirmar_encomenda_{NONCE}_0towlsj_7_8", "confirmar_encomenda_abc"):
+            self.responder.reset_mock()
+            await self._run(data)
+            self.assertEqual(self._ecra()[0], "❌ Produto não encontrado.", data)
+            self.lookup.assert_not_awaited()
+
+    # H4
+    async def test_existing_paid_order_gets_one_alert_and_no_edit(self):
+        await self._run(self._cb(), existente=self.encomenda, garantir=("paga", None))
+        self.query.answer.assert_awaited_once_with(MENSAGEM_JA_REGISTADA, show_alert=True)
+        self.responder.assert_not_awaited()
+        self.reservar.assert_not_awaited()
+
+    async def test_existing_unpaid_order_redraws_payment_screen(self):
+        await self._run(self._cb(), existente=self.encomenda, garantir=("aberta", URL))
+        self.query.answer.assert_awaited_once_with(MENSAGEM_JA_REGISTADA, show_alert=True)
+        texto, botoes, _ = self._ecra()
+        self.assertIn("Encomenda #5", texto)
+        self.assertEqual(botoes[0], ("💳 Pagar Agora", URL))
+        self.reservar.assert_not_awaited()
+
+    # H5
+    async def test_order_of_other_user_gets_invalid_alert_only(self):
+        alheia = SimpleNamespace(id=6, total=Decimal("1"), utilizador=SimpleNamespace(telegram_id="123"))
+        await self._run(self._cb(), existente=alheia)
+        self.query.answer.assert_awaited_once_with("❌ Pedido inválido.", show_alert=True)
+        self.responder.assert_not_awaited()
+        self.garantir.assert_not_awaited()
+
+    # H6
+    async def test_unused_token_expiry_boundaries(self):
+        for idade, expirado in ((29 * 60 + 59, False), (30 * 60 + 1, True), (-61, True)):
+            self.calls.clear()
+            self.responder.reset_mock()
+            await self._run(self._cb(idade=idade))
+            if expirado:
+                self.assertEqual(self._ecra()[0], MENSAGEM_ECRA_EXPIRADO, idade)
+                self.reservar.assert_not_awaited()
+            else:
+                self.reservar.assert_awaited_once()
+
+    # H13 (and H6's "a used nonce at any age")
+    async def test_old_button_of_existing_unpaid_order_recovers_payment(self):
+        await self._run(self._cb(idade=45 * 60), existente=self.encomenda, garantir=("aberta", URL))
+        self.garantir.assert_awaited_once()
+        self.reservar.assert_not_awaited()
+        self.assertNotEqual(self._ecra()[0], MENSAGEM_ECRA_EXPIRADO)
+
+    # H7
+    async def test_lost_race_still_recovers_payment(self):
+        await self._run(self._cb(), reservar=("existente", self.encomenda), garantir=("aberta", URL))
+        self.garantir.assert_awaited_once()
+        self.assertEqual(self._ecra()[1][0], ("💳 Pagar Agora", URL))
+        self.query.answer.assert_awaited_once_with()
+
+    # H8
+    async def test_no_stock_inside_transaction(self):
+        await self._run(self._cb(), reservar=("sem_stock", None))
+        self.assertEqual(self._ecra()[0], "😔 Lamentamos, este produto ficou sem stock entretanto.")
+        self.garantir.assert_not_awaited()
+
+    # H9
+    async def test_order_creation_failure_shows_retry_screen(self):
+        data = self._cb()
+        with self.assertLogs("telegram_bot.handlers.customer", level="ERROR") as logs:
+            await self._run(data, reservar=RuntimeError("segredo interno"))
+        texto, botoes, parse_mode = self._ecra()
+        self.assertEqual(texto, MENSAGEM_FALHA_REGISTO)
+        self.assertIsNone(parse_mode)
+        self.assertEqual(botoes, [("🔄 Tentar novamente", data), ("🔙 Voltar aos produtos", "cat_ssd")])
+        self.assertNotIn("segredo", texto)
+        self.assertIn("segredo interno", "\n".join(logs.output))
+        self.garantir.assert_not_awaited()
+        self.query.answer.assert_awaited_once_with()
+
+    # H12
+    async def test_retry_after_committed_failure_gets_existing_order_path(self):
+        retry = self._cb()  # identical callback from the H9 screen
+        await self._run(retry, existente=self.encomenda, garantir=("paga", None))
+        self.query.answer.assert_awaited_once_with(MENSAGEM_JA_REGISTADA, show_alert=True)
+        self.reservar.assert_not_awaited()
+
+    # H11 (answer before slow work) and the D18 screen
+    async def test_answers_before_reservation_and_stripe(self):
+        await self._run(self._cb())
+        self.assertEqual(self.calls, ["answer", "reservar", "garantir", "responder"])
+        self.query.answer.assert_awaited_once_with()
+
+    async def test_payment_link_failure_offers_retry(self):
+        data = self._cb()
+        with self.assertLogs("telegram_bot.handlers.customer", level="ERROR"):
+            await self._run(data, garantir=RuntimeError("stripe down"))
+        texto, botoes, _ = self._ecra()
+        self.assertIn("Não foi possível gerar o link de pagamento", texto)
+        self.assertEqual(botoes, [("🔄 Tentar novamente", data), ("🛒 Ver Encomendas", "menu_encomendas")])
+        self.query.answer.assert_awaited_once_with()
+
+    # H14
+    async def test_completed_session_shows_dont_pay_again_screen(self):
+        await self._run(self._cb(), existente=self.encomenda, garantir=("a_confirmar", None))
+        self.query.answer.assert_awaited_once_with(MENSAGEM_JA_REGISTADA, show_alert=True)
+        texto, botoes, parse_mode = self._ecra()
+        self.assertEqual(texto, MENSAGEM_PAGAMENTO_A_CONFIRMAR.format(id=5))
+        self.assertEqual(botoes, [("🛒 Ver Encomendas", "menu_encomendas")])
+        self.assertIsNone(parse_mode)
+        self.reservar.assert_not_awaited()
+
+    async def test_message_not_modified_counts_as_success(self):
+        self.responder.side_effect = BadRequest("Message is not modified: specified new message content is the same")
+        await self._run(self._cb(), existente=self.encomenda, garantir=("a_confirmar", None))
+        self.query.answer.assert_awaited_once()
+
+    # H10
+    async def test_each_confirm_screen_gets_a_new_token_with_current_time(self):
+        callbacks_vistos = []
+        responder = AsyncMock(side_effect=lambda *a, **k: callbacks_vistos.append(a[3].inline_keyboard[0][0].callback_data))
+        with patch.object(confirmacao, "agora", return_value=AGORA), \
+             patch.object(customer.services, "get_produto", AsyncMock(return_value=self.produto)), \
+             patch.object(customer, "responder", responder):
+            for _ in range(2):
+                await customer.encomendar(callbacks._RespostaUnica(self.query), MagicMock(), "encomendar_7", 99)
+        lidos = [confirmacao.ler_callback(c)[1] for c in callbacks_vistos]
+        self.assertNotEqual(lidos[0].chave, lidos[1].chave)
+        self.assertEqual({l.emitida_em for l in lidos}, {AGORA})
+        self.assertEqual({l.produto_id for l in lidos}, {7})
 
 
 class PhotoFallbackTests(SimpleTestCase):
