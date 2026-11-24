@@ -14,7 +14,7 @@ Status: draft sequencing from a static code review. Keep the work bounded; do no
 | Tests for callback routing, admin gate, checkout | 1 | Done: mock tests plus PostgreSQL tests (`manage.py test core telegram_bot`) |
 | Fix the order-detail callback mismatch (SEC-12) | 1 | Done |
 | `.env.example`, environment validation, setup guide | 1 | Done (Python version documented as the one tested: 3.13) |
-| CI | 1 | Open |
+| CI | 1 | Added: GitHub Actions runs check, migration drift and the PostgreSQL suite |
 | Expiry stock release (SEC-04), webhook idempotency (SEC-05), cancellation and refunds (SEC-06) | 2 | Open; SEC-06 includes the accepted checkout cancellation window |
 | Safe settings defaults (SEC-01) | 4 | Open |
 

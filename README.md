@@ -40,6 +40,7 @@ These steps match how the checks were run on Windows with Python 3.13 and Postgr
 7. **Tests:**
    - `python manage.py test core telegram_bot` needs the PostgreSQL role from step 2; Django creates and drops `test_<DB_NAME>` itself.
    - `python manage.py test telegram_bot` alone needs no database server.
+8. **CI:** `.github/workflows/tests.yml` runs the same check, a migration drift check and the full suite on PostgreSQL 17 for pushes to `main` and for pull requests.
 
 ## Running and project layout
 
