@@ -101,7 +101,7 @@ Python, Django, PostgreSQL, python-telegram-bot, Stripe, Pillow, and python-dote
 
 All settings come from environment variables. `.env.example` lists every one with a placeholder and says which commands need it. `config/settings.py` refuses to start without `SECRET_KEY` and `DB_NAME`, and `python bot.py` refuses to start without its Telegram and Stripe settings.
 
-Do not put real values in this repository. `DEBUG` still defaults to True, and `ALLOWED_HOSTS` is `['*']`. Both need hardening before a public or production deployment (SECURITY.md SEC-01).
+Do not put real values in this repository. `DEBUG` defaults to False, and `ALLOWED_HOSTS` to an empty list. Set `DEBUG=True` only for local development, and list your host names in `ALLOWED_HOSTS` for any deployment. HTTPS and cookie settings still need defining before a public deployment (SECURITY.md SEC-01).
 
 ## Review priorities
 

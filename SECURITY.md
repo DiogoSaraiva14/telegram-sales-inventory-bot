@@ -3,11 +3,10 @@
 Status: started as a static review of the imported source snapshot. Since then, automated tests have been added for the fixed findings (SEC-02, SEC-03, SEC-13). They run on PostgreSQL with Telegram and Stripe mocked; see README.md. No runtime exploit checks, dependency audit, or deployment review have been run. Priorities below are engineering urgency, not CVSS scores or claims of demonstrated exploitation.
 
 **Finding status (2026-11-24):**
-- **Fixed:** SEC-02 (bot checkout) and SEC-13.
+- **Fixed:** SEC-01, SEC-02 (bot checkout), SEC-12 and SEC-13.
 - **Mostly fixed:** SEC-03. What remains is deferred to SEC-06.
 - **Partly addressed:** SEC-11. Checkout no longer re-saves products, but other saves still re-encode images.
-- **Open:** SEC-01, SEC-04, SEC-05, SEC-06, SEC-07, SEC-08, SEC-09 and SEC-10.
-- **Fixed:** SEC-12 (2026-11-24).
+- **Open:** SEC-04, SEC-05, SEC-06, SEC-07, SEC-08, SEC-09 and SEC-10.
 
 ## Trust boundaries
 
@@ -31,7 +30,13 @@ Status: started as a static review of the imported source snapshot. Since then, 
 
 ### SEC-01 — Unsafe Django configuration defaults (High priority)
 
-config/settings.py lines 14–20 permits SECRET_KEY to be absent, defaults DEBUG to True, and accepts every host with ALLOWED_HOSTS = ['*']. A deployment that does not override these values starts with unsafe settings or fails later in confusing ways. Require explicit environment-specific values and fail startup when production settings are incomplete.
+**Status: fixed (2026-11-24).**
+- `SECRET_KEY` and `DB_NAME` are required: settings refuse to load without them.
+- `DEBUG` now defaults to False and is on only when set to `True`.
+- `ALLOWED_HOSTS` comes from a comma-separated `ALLOWED_HOSTS` variable and defaults to empty. With `DEBUG` off and no hosts, Django serves nothing: `runserver` refuses to start, and a WSGI server answers every request with 400. That is a safe failure, not an open one.
+- Still open, with the Phase 4 deployment work: HTTPS, secure cookies, HSTS and `CSRF_TRUSTED_ORIGINS`.
+
+Originally: config/settings.py lines 14–20 permitted SECRET_KEY to be absent, defaults DEBUG to True, and accepts every host with ALLOWED_HOSTS = ['*']. A deployment that does not override these values starts with unsafe settings or fails later in confusing ways. Require explicit environment-specific values and fail startup when production settings are incomplete.
 
 ### SEC-02 — Order and stock writes are not atomic (High priority)
 
