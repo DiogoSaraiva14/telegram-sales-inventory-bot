@@ -35,7 +35,12 @@ The strongest potential portfolio story is an end-to-end order and inventory wor
 - **Price:** charged as saved on the order (price snapshot), and the product name is snapshotted on the order line. Stripe gets no product description.
 - **Expired sessions:** an expired, unpaid Stripe Checkout Session is replaced with a new one if the customer retries before the expiry webhook arrives. A completed session waiting for the webhook is never replaced; the customer is told not to pay again.
 - **Expiry webhook (SEC-04, owner decision, 2026-11-24):** it cancels the unpaid order, returns its stock in the same transaction, and notifies the customer with the existing cancellation message. No scheduler. Orders that never got a session still hold stock.
-- **Deferred to SEC-06 (owner decision, 2026-11-22):** expiring the Stripe session when an order is cancelled, refunds, and how the webhook treats payments for cancelled orders. Until then, a cancelled order may still be paid and confirmed, so the project stays an unvalidated portfolio project, not production-ready.
+- **Cancellation (SEC-06, owner decisions, 2026-11-24):**
+  - Cancelling a paid order refunds it in full through Stripe.
+  - Cancelling an order with an open payment link expires the link first. If the customer already paid, the order is not cancelled.
+  - A payment that arrives for a cancelled order is refunded in full, and the order stays cancelled.
+  - The Django admin bulk cancel runs the same operation as the Telegram admin, including the customer message.
+  - The project is still an unvalidated portfolio project, not production-ready: nothing has run against live Stripe.
 
 ## Business rules to confirm before redesign
 

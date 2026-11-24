@@ -847,3 +847,202 @@ class ConcurrentWebhookTests(TransactionTestCase):
         self.assertEqual(RegistoAuditoria.objects.filter(acao="PAGAMENTO_CONFIRMADO").count(), 1)
         self.assertEqual(post.call_count, 1)
         self.assertEqual(Encomenda.objects.get(pk=encomenda.pk).estado, "confirmada")
+
+
+# ── One cancellation for every admin surface: Stripe, stock, audit (SEC-06) ─
+
+@override_settings(TELEGRAM_TOKEN="test-token", **URLS_A)
+class CancelamentoTests(TestCase):
+
+    def setUp(self):
+        self.produto = criar_produto(stock=5)
+        _, self.encomenda = services.reservar_encomenda(utilizador_telegram(7010), self.produto.id, nova_chave())
+        mocks = {}
+        for alvo, nome in ((stripe.checkout.Session, "retrieve"), (stripe.checkout.Session, "expire"),
+                           (stripe.Refund, "create")):
+            p = patch.object(alvo, nome)
+            mocks[nome] = p.start()
+            self.addCleanup(p.stop)
+        self.retrieve, self.expire, self.refund = mocks["retrieve"], mocks["expire"], mocks["create"]
+        envio = patch("core.views.httpx.post", return_value=MagicMock(status_code=200))
+        self.post = envio.start()
+        self.addCleanup(envio.stop)
+
+    def pagar(self, estado="pendente", encomenda="pendente"):
+        Encomenda.objects.filter(pk=self.encomenda.pk).update(estado=encomenda)
+        Pagamento.objects.create(
+            encomenda=self.encomenda, metodo="stripe", valor=self.encomenda.total,
+            estado_pagamento=estado, stripe_session_id="cs_c")
+
+    def stock(self):
+        return Produto.objects.get(pk=self.produto.pk).stock_atual
+
+    def estado(self):
+        pagamento = Pagamento.objects.filter(encomenda=self.encomenda).values_list("estado_pagamento", flat=True).first()
+        return (Encomenda.objects.get(pk=self.encomenda.pk).estado, pagamento)
+
+    def nada_mudou(self, estado):
+        self.assertEqual(self.estado(), estado)
+        self.assertEqual(self.stock(), 4)
+        self.assertFalse(MovimentoStock.objects.filter(tipo_movimento="entrada").exists())
+        self.assertFalse(RegistoAuditoria.objects.filter(acao="CANCELAR_ENCOMENDA").exists())
+
+    def test_c1_order_without_payment_is_cancelled_without_stripe(self):
+        resultado, _ = services.cancelar_encomenda(self.encomenda.id, "teste")
+        self.assertEqual(resultado, "cancelada")
+        self.assertEqual(self.estado(), ("cancelada", None))
+        self.assertEqual(self.stock(), 5)
+        self.assertEqual(MovimentoStock.objects.filter(tipo_movimento="entrada").count(), 1)
+        self.assertIn("(teste)", RegistoAuditoria.objects.get(acao="CANCELAR_ENCOMENDA").descricao)
+        self.retrieve.assert_not_called()
+
+    def test_c2_open_session_is_expired_before_cancelling(self):
+        self.pagar()
+        self.retrieve.return_value = sessao("cs_c", "open")
+        self.assertEqual(services.cancelar_encomenda(self.encomenda.id)[0], "cancelada")
+        self.expire.assert_called_once_with("cs_c")
+        self.assertEqual(self.estado(), ("cancelada", "falhado"))
+        self.assertEqual(self.stock(), 5)
+
+    def test_c3_completed_session_refuses_the_cancellation(self):
+        self.pagar()
+        self.retrieve.return_value = sessao("cs_c", "complete")
+        with self.assertRaises(services.PagamentoRecebido):
+            services.cancelar_encomenda(self.encomenda.id)
+        self.expire.assert_not_called()
+        self.nada_mudou(("pendente", "pendente"))
+
+    def test_c4_expired_session_needs_no_stripe_write(self):
+        self.pagar()
+        self.retrieve.return_value = sessao("cs_c", "expired")
+        self.assertEqual(services.cancelar_encomenda(self.encomenda.id)[0], "cancelada")
+        self.expire.assert_not_called()
+        self.assertEqual(self.estado(), ("cancelada", "falhado"))
+
+    def test_c5_paid_order_is_refunded_in_full(self):
+        self.pagar(estado="pago", encomenda="confirmada")
+        self.retrieve.return_value = SimpleNamespace(payment_intent="pi_1")
+        self.assertEqual(services.cancelar_encomenda(self.encomenda.id)[0], "reembolsada")
+        self.refund.assert_called_once()
+        kwargs = self.refund.call_args.kwargs
+        self.assertEqual(kwargs["payment_intent"], "pi_1")
+        self.assertNotIn("amount", kwargs)  # full refund
+        self.assertTrue(kwargs["idempotency_key"].startswith(f"reembolso-encomenda-{self.encomenda.id}-"))
+        self.assertEqual(self.estado(), ("cancelada", "reembolsado"))
+        self.assertEqual(self.stock(), 5)
+
+    def test_c6_stripe_failure_changes_nothing(self):
+        self.pagar(estado="pago", encomenda="confirmada")
+        self.retrieve.return_value = SimpleNamespace(payment_intent="pi_1")
+        self.refund.side_effect = stripe.error.APIConnectionError("sem rede")
+        with self.assertRaises(stripe.error.StripeError):
+            services.cancelar_encomenda(self.encomenda.id)
+        self.nada_mudou(("confirmada", "pago"))
+
+    def test_c7_shipped_or_missing_order_is_not_cancelled(self):
+        Encomenda.objects.filter(pk=self.encomenda.pk).update(estado="enviada")
+        self.assertEqual(services.cancelar_encomenda(self.encomenda.id)[0], "invalida")
+        self.assertEqual(services.cancelar_encomenda(999999), ("invalida", None))
+        self.nada_mudou(("enviada", None))
+
+    def test_c8_payment_completing_after_cancellation_is_refunded(self):
+        from core.views import _handle_payment_success
+        self.pagar()
+        self.retrieve.return_value = SimpleNamespace(status="open", payment_intent="pi_late")
+        services.cancelar_encomenda(self.encomenda.id)
+        _handle_payment_success({"id": "cs_c"})
+        _handle_payment_success({"id": "cs_c"})  # duplicate delivery
+        self.refund.assert_called_once()
+        self.assertEqual(self.refund.call_args.kwargs["payment_intent"], "pi_late")
+        self.assertEqual(self.estado(), ("cancelada", "reembolsado"))
+        self.assertEqual(self.stock(), 5)
+        self.assertEqual(RegistoAuditoria.objects.filter(acao="PAGAMENTO_REEMBOLSADO").count(), 1)
+        self.post.assert_called_once()
+        self.assertIn("reembolsado na totalidade", self.post.call_args.kwargs["json"]["text"])
+
+    def test_c9_refund_failure_in_webhook_rolls_back_for_redelivery(self):
+        from core.views import _handle_payment_success
+        self.pagar(estado="falhado", encomenda="cancelada")
+        self.retrieve.return_value = SimpleNamespace(payment_intent="pi_late")
+        self.refund.side_effect = stripe.error.APIConnectionError("sem rede")
+        with self.assertRaises(stripe.error.StripeError):
+            _handle_payment_success({"id": "cs_c"})
+        self.assertEqual(self.estado(), ("cancelada", "falhado"))
+        self.post.assert_not_called()
+
+    def test_c10_django_admin_bulk_cancel_uses_the_shared_operation(self):
+        from django.contrib import admin as django_admin
+        from core.admin import EncomendaAdmin
+        _, enviada = services.reservar_encomenda(utilizador_telegram(7011), self.produto.id, nova_chave())
+        Encomenda.objects.filter(pk=enviada.pk).update(estado="enviada")
+        modelo = EncomendaAdmin(Encomenda, django_admin.site)
+        with patch.object(modelo, "message_user") as message_user:
+            modelo.marcar_cancelada(SimpleNamespace(user="admin"),
+                                    Encomenda.objects.filter(pk__in=[self.encomenda.pk, enviada.pk]))
+        self.assertEqual(self.estado(), ("cancelada", None))
+        self.assertEqual(Encomenda.objects.get(pk=enviada.pk).estado, "enviada")
+        self.assertEqual(self.stock(), 4)  # 3 after two orders, +1 for the cancelled one
+        self.assertIn("Django admin: admin", RegistoAuditoria.objects.get(acao="CANCELAR_ENCOMENDA").descricao)
+        self.post.assert_called_once()
+        self.assertIn("foi cancelada", self.post.call_args.kwargs["json"]["text"])
+        textos = [c.args[1] for c in message_user.call_args_list]
+        self.assertIn("1 encomenda(s) cancelada(s).", textos)
+        self.assertTrue(any(f"#{enviada.pk}" in t for t in textos))
+
+
+@override_settings(TELEGRAM_TOKEN="test-token", **URLS_A)
+class ConcurrentCancellationTests(TransactionTestCase):
+
+    esperar_bloqueio = ConcurrentCheckoutTests.esperar_bloqueio
+
+    def test_t5_payment_webhook_waits_for_cancellation_then_refunds(self):
+        """The admin cancel holds the order lock during its Stripe call; the webhook must wait."""
+        from core.views import _handle_payment_success
+        Utilizador.objects.create(telegram_id="5006", nome="Cliente")
+        produto = criar_produto(stock=5)
+        _, encomenda = services.reservar_encomenda(utilizador_telegram(5006, "Cliente"), produto.id, nova_chave())
+        Pagamento.objects.create(encomenda=encomenda, metodo="stripe", valor=encomenda.total,
+                                 estado_pagamento="pendente", stripe_session_id="cs_t5")
+        pids, erros = {}, []
+        admin_tem_bloqueio, libertar_admin = threading.Event(), threading.Event()
+
+        def expirar(_id):
+            admin_tem_bloqueio.set()
+            libertar_admin.wait(10)
+
+        def correr(nome, funcao):
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    pids[nome] = cursor.fetchone()[0]
+                funcao()
+            except Exception as exc:  # reported by the assertions below
+                erros.append(exc)
+            finally:
+                connection.close()
+
+        with patch.object(stripe.checkout.Session, "retrieve",
+                          return_value=SimpleNamespace(status="open", payment_intent="pi_t5")), \
+             patch.object(stripe.checkout.Session, "expire", side_effect=expirar), \
+             patch.object(stripe.Refund, "create") as refund, \
+             patch("core.views.httpx.post", return_value=MagicMock(status_code=200)) as post:
+            admin = threading.Thread(target=correr, args=("admin", lambda: services.cancelar_encomenda(encomenda.id)))
+            webhook = threading.Thread(target=correr, args=("webhook", lambda: _handle_payment_success({"id": "cs_t5"})))
+            admin.start()
+            try:
+                self.assertTrue(admin_tem_bloqueio.wait(5), "o cancelamento não chegou à Stripe")
+                webhook.start()
+                self.assertTrue(self.esperar_bloqueio(pids, "webhook", "admin"), "o webhook nunca esperou")
+                refund.assert_not_called()
+            finally:
+                libertar_admin.set()
+                admin.join(10)
+                if webhook.ident:
+                    webhook.join(10)
+        self.assertFalse(admin.is_alive() or webhook.is_alive(), "uma thread não terminou")
+        self.assertEqual(erros, [])
+        refund.assert_called_once()
+        self.assertEqual(Encomenda.objects.get(pk=encomenda.pk).estado, "cancelada")
+        self.assertEqual(Pagamento.objects.get(encomenda=encomenda).estado_pagamento, "reembolsado")
+        self.assertEqual(Produto.objects.get(pk=produto.pk).stock_atual, 5)
+        self.assertIn("reembolsado", post.call_args.kwargs["json"]["text"])

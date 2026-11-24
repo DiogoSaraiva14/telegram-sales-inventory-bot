@@ -414,3 +414,41 @@ class PhotoFallbackTests(SimpleTestCase):
 
 def _raise(exc):
     raise exc
+
+
+class AdminCancelHandlerTests(SimpleTestCase):
+    """SEC-06: the Telegram admin cancel goes through the shared operation and reports Stripe outcomes."""
+
+    async def _cancelar(self, **servico):
+        query = MagicMock()
+        query.answer = AsyncMock()
+        responder, notificar = AsyncMock(), AsyncMock(return_value=True)
+        with patch.object(admin.services, "cancelar_encomenda_db", AsyncMock(**servico)), \
+             patch.object(admin.services, "registar_auditoria", AsyncMock()), \
+             patch.object(admin, "responder", responder), patch.object(admin, "notificar_cliente", notificar):
+            await admin._mudar_estado_e_notificar(query, MagicMock(), 1, 7, "cancelada", "CANCELAR")
+        return responder.await_args.args[2], notificar
+
+    async def test_refunded_cancel_sends_the_refund_message(self):
+        encomenda = SimpleNamespace(id=7, total=Decimal("9.99"), utilizador=SimpleNamespace(nome="Ana"))
+        texto, notificar = await self._cancelar(return_value=("reembolsada", encomenda))
+        self.assertEqual(notificar.await_args.args[2], "reembolsada")
+        self.assertIn("marcada como *cancelada*", texto)
+
+    async def test_payment_just_received_is_not_cancelled(self):
+        from core.services import PagamentoRecebido
+        texto, notificar = await self._cancelar(side_effect=PagamentoRecebido(7))
+        self.assertIn("acabou de pagar", texto)
+        notificar.assert_not_awaited()
+
+    async def test_stripe_error_changes_nothing(self):
+        import stripe
+        with self.assertLogs("telegram_bot.handlers.admin", level="ERROR"):
+            texto, notificar = await self._cancelar(side_effect=stripe.error.APIConnectionError("sem rede"))
+        self.assertIn("Não foi possível contactar a Stripe", texto)
+        notificar.assert_not_awaited()
+
+    async def test_order_that_cannot_be_cancelled(self):
+        texto, notificar = await self._cancelar(return_value=("invalida", None))
+        self.assertIn("não encontrada ou estado inválido", texto)
+        notificar.assert_not_awaited()

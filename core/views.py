@@ -55,11 +55,17 @@ def _handle_payment_success(session):
         return
 
     # SEC-05: the state check and every write happen under row locks in one transaction.
-    if pagamento.estado_pagamento == 'pago' or not services.confirmar_pagamento(pagamento.pk, session_id):
+    resultado = (None if pagamento.estado_pagamento in ('pago', 'reembolsado')
+                 else services.confirmar_pagamento(pagamento.pk, session_id))
+    if resultado is None:
         logger.info("Evento duplicado ignorado: session_id=%s", session_id)
         return
 
     encomenda = pagamento.encomenda
+    if resultado == 'reembolsada':
+        logger.warning("Pagamento de encomenda cancelada reembolsado: encomenda_id=%s", encomenda.id)
+        notificar_cancelamento(encomenda, resultado)
+        return
     logger.info("Pagamento confirmado: encomenda_id=%s", encomenda.id)
     # After the commit, and only by the delivery that confirmed it: at most one message.
     _notificar_pagamento_telegram(encomenda)
@@ -72,6 +78,11 @@ def _notificar_pagamento_telegram(encomenda):
         f"💶 Total: {encomenda.total:.2f}€\n\n"
         f"O teu pagamento foi recebido. Estamos a preparar o teu pedido! 🙏"
     ))
+
+
+def notificar_cancelamento(encomenda, resultado):
+    """resultado: "cancelada" or "reembolsada" (the key of the customer message)."""
+    _enviar_telegram(encomenda, MENSAGENS_NOTIFICACAO[resultado].format(id=encomenda.id, total=float(encomenda.total)))
 
 
 def _enviar_telegram(encomenda, mensagem):
@@ -116,5 +127,4 @@ def _handle_payment_expired(session):
     cancelada = services.cancelar_por_expiracao(pagamento.pk, session_id)
     logger.info("Pagamento expirado: encomenda_id=%s cancelada=%s", pagamento.encomenda_id, cancelada)
     if cancelada:  # the transaction has committed, so the customer is told only about a real cancellation
-        encomenda = pagamento.encomenda
-        _enviar_telegram(encomenda, MENSAGENS_NOTIFICACAO['cancelada'].format(id=encomenda.id, total=float(encomenda.total)))
+        notificar_cancelamento(pagamento.encomenda, 'cancelada')
