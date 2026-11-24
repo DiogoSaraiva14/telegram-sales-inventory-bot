@@ -19,6 +19,7 @@ Status: draft sequencing from a static code review. Keep the work bounded; do no
 | Webhook idempotency (SEC-05) | 2 | Done with row locks; no notification retry |
 | Cancellation and refunds (SEC-06) | 2 | Done: one cancel operation for both admin surfaces, session expiry, full refunds; closes the checkout cancellation window |
 | Safe settings defaults (SEC-01) | 4 | Done; HTTPS, cookie and HSTS settings still open |
+| Escape dynamic Telegram Markdown (SEC-07) | 4 | Done; not checked against live Telegram |
 
 ## Phase 0 — Confirm scope and ownership
 

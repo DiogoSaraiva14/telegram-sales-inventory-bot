@@ -452,3 +452,37 @@ class AdminCancelHandlerTests(SimpleTestCase):
         texto, notificar = await self._cancelar(return_value=("invalida", None))
         self.assertIn("não encontrada ou estado inválido", texto)
         notificar.assert_not_awaited()
+
+
+class MarkdownEscapingTests(SimpleTestCase):
+    """SEC-07: names and descriptions cannot break or inject legacy-Markdown formatting."""
+
+    def test_inside_entity_matches_the_bot_api_examples(self):
+        from telegram_bot.ui import md
+        self.assertEqual("*" + md("2*2=4", "*") + "*", "*2*\\**2=4*")
+        self.assertEqual("_" + md("snake_case", "_") + "_", "_snake_\\__case_")
+        self.assertEqual(md("a_b[c`d", "*"), "a_b[c`d")  # entities do not nest: literal
+
+    def test_outside_entity_escapes_every_markdown_character(self):
+        from telegram_bot.ui import md
+        self.assertEqual(md("x_[y]*`z"), "x\\_\\[y]\\*\\`z")
+        self.assertEqual(md(42), "42")
+
+    async def test_start_greets_a_name_with_markdown_characters(self):
+        from telegram_bot.handlers import commands
+        update = MagicMock()
+        update.message.reply_text = AsyncMock()
+        utilizador = SimpleNamespace(nome="Ana*_[x](y)")
+        with patch.object(commands, "get_or_create_utilizador", AsyncMock(return_value=(utilizador, False))):
+            await inspect.unwrap(commands.start)(update, MagicMock())
+        texto = update.message.reply_text.await_args.args[0]
+        self.assertTrue(texto.startswith("Olá, *Ana*\\**_[x](y)*! "))
+
+    async def test_confirm_screen_escapes_the_product_name(self):
+        query = MagicMock()
+        responder = AsyncMock()
+        produto = SimpleNamespace(id=3, nome="SSD *Pro*", preco=Decimal("9.99"), stock_atual=2)
+        with patch.object(customer.services, "get_produto", AsyncMock(return_value=produto)), \
+             patch.object(customer, "responder", responder):
+            await customer.encomendar(query, MagicMock(), "encomendar_3", 99)
+        self.assertIn("Produto: *SSD *\\**Pro*\\***\n", responder.await_args.args[2])
