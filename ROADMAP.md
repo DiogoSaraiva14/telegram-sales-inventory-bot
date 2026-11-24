@@ -21,6 +21,7 @@ Status: draft sequencing from a static code review. Keep the work bounded; do no
 | Safe settings defaults (SEC-01) | 4 | Done; HTTPS, cookie and HSTS settings still open |
 | Escape dynamic Telegram Markdown (SEC-07) | 4 | Done; not checked against live Telegram |
 | No raw Telegram ids, usernames or bot token in logs (SEC-08) | 4 | Done; retention and access still to define |
+| Bounded in-process rate and session state (SEC-09) | 3 | Done; single polling process documented |
 
 ## Phase 0 — Confirm scope and ownership
 
@@ -59,7 +60,7 @@ Status: draft sequencing from a static code review. Keep the work bounded; do no
 - Split bot.py into routing, keyboards/presentation, and domain services. (Done: telegram_bot/ and core/services.py. Bot checkout is transactional; the admin helpers are not yet.)
 - Replace duplicated Telegram/Django admin business logic with shared operations.
 - Give state-changing operations explicit inputs/outputs and audit behavior.
-- Bound and externalize rate/session state if multi-process deployment is selected.
+- Rate and session state are bounded and single-process (SEC-09). Externalize them only if the bot moves to webhook mode with several workers.
 - Paginate product, customer, and order lists.
 
 **Done when:** handlers are thin and core business behavior can be tested without a live Telegram or Stripe account.

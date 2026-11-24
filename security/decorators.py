@@ -12,11 +12,25 @@ from security.sanitization import pseudonimo
 logger = logging.getLogger(__name__)
 
 # ── Rate limiting ──────────────────────────────────────────────────
+# In-process state (SEC-09): the polling bot runs as exactly one process, because
+# Telegram refuses a second getUpdates consumer for the same token. A restart resets it.
 _rate_data: dict[int, list[float]] = defaultdict(list)
 _rate_lock = asyncio.Lock()
+_ultima_limpeza = 0.0
 
 RATE_LIMIT = 5   # máximo de ações
 RATE_WINDOW = 10  # por janela de 10 segundos
+LIMPEZA_INTERVALO = 60  # segundos entre limpezas de utilizadores inativos
+
+
+def _limpar_inativos(agora: float) -> None:
+    """Drop users with no request inside the window, at most once per interval, so memory stays bounded."""
+    global _ultima_limpeza
+    if agora - _ultima_limpeza < LIMPEZA_INTERVALO:
+        return
+    _ultima_limpeza = agora
+    for user_id in [u for u, tempos in _rate_data.items() if not tempos or agora - tempos[-1] >= RATE_WINDOW]:
+        del _rate_data[user_id]
 
 def rate_limit(func):
     @wraps(func)
@@ -25,6 +39,7 @@ def rate_limit(func):
         agora = time.monotonic()
 
         async with _rate_lock:
+            _limpar_inativos(agora)
             _rate_data[user_id] = [
                 t for t in _rate_data[user_id] if agora - t < RATE_WINDOW
             ]

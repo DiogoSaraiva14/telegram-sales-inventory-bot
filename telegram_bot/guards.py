@@ -28,11 +28,21 @@ def is_admin(user_id: int) -> bool:
 
 # ── Session timeout ────────────────────────────────────────────────────────
 
+# In-process state, like the rate limiter (SEC-09): one polling process, reset on restart.
 SESSION_TIMEOUT = 30 * 60
+LIMPEZA_INTERVALO = 60  # segundos entre limpezas de sessões expiradas
 _ultima_atividade: dict[int, float] = {}
+_ultima_limpeza = 0.0
 
 def _registar_atividade(user_id: int) -> None:
-    _ultima_atividade[user_id] = time.monotonic()
+    global _ultima_limpeza
+    agora = time.monotonic()
+    if agora - _ultima_limpeza >= LIMPEZA_INTERVALO:
+        # A missing entry already counts as expired, so dropping expired ones changes nothing.
+        _ultima_limpeza = agora
+        for uid in [u for u, t in _ultima_atividade.items() if agora - t > SESSION_TIMEOUT]:
+            del _ultima_atividade[uid]
+    _ultima_atividade[user_id] = agora
 
 def _sessao_expirada(user_id: int) -> bool:
     ultimo = _ultima_atividade.get(user_id)

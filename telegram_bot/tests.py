@@ -534,3 +534,44 @@ class LogPrivacyTests(SimpleTestCase):
         self.assertIn("RuntimeError", texto)
         self.assertNotIn("SEGREDO", texto)
         self.assertNotIn("5551234", texto)
+
+
+class InProcessStateTests(SimpleTestCase):
+    """SEC-09: rate-limit and session state stay bounded; limits and expiry behave as before."""
+
+    async def test_rate_limiter_still_limits_and_forgets_idle_users(self):
+        from security import decorators
+        agora = [1000.0]
+        alvo = AsyncMock()
+        protegido = decorators.rate_limit(alvo)
+
+        def pedido(uid):
+            return MagicMock(effective_user=SimpleNamespace(id=uid), message=MagicMock(reply_text=AsyncMock()))
+
+        with patch.dict(decorators._rate_data, clear=True), patch.object(decorators, "_ultima_limpeza", 0.0), \
+             patch.object(decorators, "time", SimpleNamespace(monotonic=lambda: agora[0])):
+            for _ in range(decorators.RATE_LIMIT + 1):
+                bloqueado = pedido(1)
+                await protegido(bloqueado, MagicMock())
+            self.assertEqual(alvo.await_count, decorators.RATE_LIMIT)
+            bloqueado.message.reply_text.assert_awaited_once()
+            for uid in range(2, 52):
+                await protegido(pedido(uid), MagicMock())
+            self.assertEqual(len(decorators._rate_data), 51)
+            agora[0] += decorators.LIMPEZA_INTERVALO
+            await protegido(pedido(999), MagicMock())
+            self.assertEqual(set(decorators._rate_data), {999})
+
+    def test_session_store_drops_expired_users_without_changing_expiry(self):
+        from telegram_bot import guards
+        agora = [1000.0]
+        with patch.dict(guards._ultima_atividade, clear=True), patch.object(guards, "_ultima_limpeza", 0.0), \
+             patch.object(guards, "time", SimpleNamespace(monotonic=lambda: agora[0])):
+            for uid in range(50):
+                guards._registar_atividade(uid)
+            agora[0] += guards.SESSION_TIMEOUT + 1
+            self.assertTrue(guards._sessao_expirada(1))  # expired before any cleanup
+            guards._registar_atividade(999)
+            self.assertEqual(set(guards._ultima_atividade), {999})
+            self.assertTrue(guards._sessao_expirada(1))
+            self.assertFalse(guards._sessao_expirada(999))
