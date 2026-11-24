@@ -36,6 +36,12 @@ MENSAGENS_NOTIFICACAO = {
         "💶 Total: {total:.2f}€\n\n"
         "Se não solicitaste este cancelamento, contacta o suporte."
     ),
+    'reembolsada': (
+        "❌ *A tua encomenda foi cancelada.*\n\n"
+        "📦 Encomenda #{id}\n"
+        "💶 Total: {total:.2f}€\n\n"
+        "O valor pago foi reembolsado na totalidade. Pode demorar alguns dias a aparecer na tua conta."
+    ),
 }
 
 ESTADO_EMOJI = {

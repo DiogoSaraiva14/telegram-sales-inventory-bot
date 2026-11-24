@@ -111,33 +111,8 @@ async def get_linhas_encomenda(encomenda):
         encomenda.linhas.select_related("produto").all()
     )
 
-async def cancelar_encomenda_db(encomenda_id: int, utilizador_id_telegram: str = None):
-    if utilizador_id_telegram:
-        encomenda = await sync_to_async(
-            Encomenda.objects.select_related('utilizador').get
-        )(
-            id=encomenda_id,
-            utilizador__telegram_id=str(utilizador_id_telegram),
-            estado='pendente'
-        )
-    else:
-        encomenda = await sync_to_async(Encomenda.objects.get)(
-            id=encomenda_id,
-            estado__in=['pendente', 'confirmada']
-        )
-    linhas = await sync_to_async(list)(encomenda.linhas.select_related('produto').all())
-    for linha in linhas:
-        linha.produto.stock_atual += linha.quantidade
-        await sync_to_async(linha.produto.save)()
-        await sync_to_async(MovimentoStock.objects.create)(
-            produto=linha.produto,
-            tipo_movimento='entrada',
-            quantidade=linha.quantidade,
-            observacoes=f"Cancelamento Encomenda #{encomenda.id}"
-        )
-    encomenda.estado = 'cancelada'
-    await sync_to_async(encomenda.save)()
-    return encomenda
+async def cancelar_encomenda_db(encomenda_id: int, origem: str = 'admin Telegram'):
+    return await sync_to_async(cancelar_encomenda)(encomenda_id, origem)
 
 async def atualizar_estado_encomenda(encomenda_id: int, novo_estado: str):
     encomenda = await sync_to_async(
@@ -338,30 +313,111 @@ async def garantir_sessao_pagamento_async(encomenda):
 
 # ── Confirmação do pagamento (SEC-05) ─────────────────────────────────────
 
-def confirmar_pagamento(pagamento_id: int, sessao_id: str) -> bool:
+def confirmar_pagamento(pagamento_id: int, sessao_id: str):
     """A Stripe Checkout Session completed: mark the payment paid and the order confirmed.
 
     One transaction under the order row lock, then the payment row lock (the same order
     as the other payment code), so concurrent duplicate deliveries run one after the
-    other and only the first changes anything. Returns True only for that first one.
+    other and only the first changes anything. Returns "confirmada" or "reembolsada"
+    (SEC-06: the order was cancelled, so the payment is refunded in full) for that first
+    one, else None. A Stripe refund error propagates, rolls everything back, and the
+    webhook answers 500 so Stripe redelivers; the refund's idempotency key makes that safe.
     """
     with transaction.atomic():
         encomenda_id = Pagamento.objects.values_list('encomenda_id', flat=True).get(pk=pagamento_id)
         encomenda = Encomenda.objects.select_for_update().get(pk=encomenda_id)
         pagamento = Pagamento.objects.select_for_update().get(pk=pagamento_id)
-        if pagamento.stripe_session_id != sessao_id or pagamento.estado_pagamento == 'pago':
-            return False  # duplicate delivery, or the session was replaced meanwhile
-        pagamento.estado_pagamento = 'pago'
+        if pagamento.stripe_session_id != sessao_id or pagamento.estado_pagamento in ('pago', 'reembolsado'):
+            return None  # duplicate delivery, or the session was replaced meanwhile
         pagamento.data_pagamento = timezone.now()
+        if encomenda.estado == 'cancelada':  # SEC-06 owner decision: refund in full, keep it cancelled
+            _reembolsar(encomenda, pagamento)
+            pagamento.estado_pagamento = 'reembolsado'
+            pagamento.save(update_fields=['estado_pagamento', 'data_pagamento'])
+            RegistoAuditoria.objects.create(
+                utilizador=encomenda.utilizador, acao='PAGAMENTO_REEMBOLSADO', entidade='Pagamento',
+                descricao=f'Encomenda #{encomenda.id} já cancelada: pagamento reembolsado (session={sessao_id})',
+            )
+            return 'reembolsada'
+        pagamento.estado_pagamento = 'pago'
         pagamento.save(update_fields=['estado_pagamento', 'data_pagamento'])
-        # Confirms whatever the order state, as before; payments for cancelled orders are SEC-06.
         encomenda.estado = 'confirmada'
         encomenda.save(update_fields=['estado', 'data_atualizacao'])
         RegistoAuditoria.objects.create(
             utilizador=encomenda.utilizador, acao='PAGAMENTO_CONFIRMADO', entidade='Pagamento',
             descricao=f'Encomenda #{encomenda.id} paga via Stripe (session={sessao_id})',
         )
-    return True
+    return 'confirmada'
+
+
+# ── Cancelamento (SEC-06, owner decisions 2026-11-24) ──────────────────────
+
+class PagamentoRecebido(Exception):
+    """The order's Stripe session is complete: the payment is arriving, so nothing is cancelled."""
+
+
+def _reembolsar(encomenda, pagamento):
+    """Full Stripe refund of the order's payment; one key per order and session, so retries are safe."""
+    payment_intent = stripe.checkout.Session.retrieve(pagamento.stripe_session_id).payment_intent
+    stripe.Refund.create(
+        payment_intent=payment_intent,
+        idempotency_key=f"reembolso-encomenda-{encomenda.id}-{hashlib.sha256(pagamento.stripe_session_id.encode()).hexdigest()}",
+    )
+
+
+def _devolver_stock(encomenda, observacoes):
+    for linha in encomenda.linhas.all():
+        # update() instead of Produto.save(): no image access (B3) and no lost update.
+        Produto.objects.filter(pk=linha.produto_id).update(stock_atual=F('stock_atual') + linha.quantidade)
+        MovimentoStock.objects.create(
+            produto_id=linha.produto_id, tipo_movimento='entrada', quantidade=linha.quantidade,
+            observacoes=observacoes,
+        )
+
+
+def cancelar_encomenda(encomenda_id: int, origem: str = ''):
+    """Cancel a pending or confirmed order, for every admin surface.
+
+    Settles the Stripe payment first: an open session is expired, a paid one is refunded
+    in full. Then returns the stock and writes the audit row. Returns (resultado, encomenda)
+    with resultado "cancelada", "reembolsada" or "invalida" (missing order, or a state that
+    cannot be cancelled). Raises PagamentoRecebido if the session already completed, and
+    stripe.error.StripeError if Stripe fails; nothing changes in either case.
+
+    The order row lock is held across the Stripe calls, so this order's webhooks wait and
+    then see the final state. A refund retried after a failed commit reuses its key.
+    """
+    with transaction.atomic():
+        encomenda = (Encomenda.objects.select_for_update(of=('self',)).select_related('utilizador')
+                     .filter(pk=encomenda_id).first())
+        if encomenda is None or encomenda.estado not in ('pendente', 'confirmada'):
+            return ('invalida', encomenda)
+        pagamento = Pagamento.objects.select_for_update().filter(encomenda=encomenda).first()
+        resultado = 'cancelada'
+        if pagamento and pagamento.estado_pagamento == 'pago':
+            if not pagamento.stripe_session_id:
+                return ('invalida', encomenda)  # paid outside Stripe: no refund path here
+            _reembolsar(encomenda, pagamento)
+            pagamento.estado_pagamento = 'reembolsado'
+            pagamento.save(update_fields=['estado_pagamento'])
+            resultado = 'reembolsada'
+        elif pagamento and pagamento.stripe_session_id and pagamento.estado_pagamento in ('pendente', 'falhado'):
+            estado_sessao = stripe.checkout.Session.retrieve(pagamento.stripe_session_id).status
+            if estado_sessao == 'complete':
+                raise PagamentoRecebido(encomenda.id)
+            if estado_sessao == 'open':
+                stripe.checkout.Session.expire(pagamento.stripe_session_id)
+            pagamento.estado_pagamento = 'falhado'
+            pagamento.save(update_fields=['estado_pagamento'])
+        _devolver_stock(encomenda, f"Cancelamento Encomenda #{encomenda.id}")
+        encomenda.estado = 'cancelada'
+        encomenda.save(update_fields=['estado', 'data_atualizacao'])
+        RegistoAuditoria.objects.create(
+            utilizador=encomenda.utilizador, acao='CANCELAR_ENCOMENDA', entidade='Encomenda',
+            descricao=f'#{encomenda.id} cancelada ({origem or "admin"}); stock devolvido'
+                      + ('; pagamento reembolsado' if resultado == 'reembolsada' else ''),
+        )
+    return (resultado, encomenda)
 
 
 # ── Expiração do pagamento (SEC-04) ────────────────────────────────────────
@@ -388,13 +444,7 @@ def cancelar_por_expiracao(pagamento_id: int, sessao_id: str) -> bool:
         )
         if encomenda.estado != 'pendente':
             return False  # e.g. already cancelled by an admin, who returned the stock then
-        for linha in encomenda.linhas.all():
-            # update() instead of Produto.save(): no image access (B3) and no lost update.
-            Produto.objects.filter(pk=linha.produto_id).update(stock_atual=F('stock_atual') + linha.quantidade)
-            MovimentoStock.objects.create(
-                produto_id=linha.produto_id, tipo_movimento='entrada', quantidade=linha.quantidade,
-                observacoes=f"Pagamento expirado — Encomenda #{encomenda.id}",
-            )
+        _devolver_stock(encomenda, f"Pagamento expirado — Encomenda #{encomenda.id}")
         encomenda.estado = 'cancelada'
         encomenda.save(update_fields=['estado', 'data_atualizacao'])
         RegistoAuditoria.objects.create(

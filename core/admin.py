@@ -2,6 +2,9 @@
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 from django.contrib import messages
+import stripe
+from . import services
+from .views import notificar_cancelamento
 from .models import (
     Utilizador, Produto, Encomenda,
     LinhaEncomenda, Pagamento, MovimentoStock, RegistoAuditoria
@@ -109,8 +112,25 @@ class EncomendaAdmin(admin.ModelAdmin):
 
     @admin.action(description='❌ Marcar como Cancelada')
     def marcar_cancelada(self, request, queryset):
-        atualizados = queryset.update(estado='cancelada')
-        self.message_user(request, f"{atualizados} encomenda(s) cancelada(s).", messages.WARNING)
+        # SEC-06: the same operation as the Telegram admin (Stripe, stock, audit, customer message).
+        canceladas, falhas = 0, []
+        for encomenda_id in queryset.values_list('id', flat=True):
+            try:
+                resultado, encomenda = services.cancelar_encomenda(encomenda_id, f'Django admin: {request.user}')
+            except services.PagamentoRecebido:
+                falhas.append(f"#{encomenda_id} (pagamento acabado de receber)")
+                continue
+            except stripe.error.StripeError:
+                falhas.append(f"#{encomenda_id} (erro da Stripe)")
+                continue
+            if resultado == 'invalida':
+                falhas.append(f"#{encomenda_id} (estado não permite cancelar)")
+                continue
+            notificar_cancelamento(encomenda, resultado)
+            canceladas += 1
+        self.message_user(request, f"{canceladas} encomenda(s) cancelada(s).", messages.WARNING)
+        if falhas:
+            self.message_user(request, "Não canceladas: " + ", ".join(falhas), messages.ERROR)
 
 
 @admin.register(LinhaEncomenda)

@@ -3,6 +3,10 @@
 Each handler takes (query, context, data, user_id). The admin permission
 check runs in telegram_bot.handlers.callbacks before any handler here.
 """
+import logging
+
+import stripe
+
 from core.models import Utilizador, Produto, Encomenda
 from core import services
 from security.sanitization import sanitizar_id, sanitizar_delta_stock, EntradaInvalida
@@ -10,6 +14,8 @@ from telegram_bot.constants import ESTADO_EMOJI
 from telegram_bot.notifications import notificar_cliente
 from telegram_bot.ui import responder
 from telegram_bot import keyboards as kb
+
+logger = logging.getLogger(__name__)
 
 
 def _texto_produto(p):
@@ -143,11 +149,31 @@ async def _mudar_estado_e_notificar(
     label_acao: str
 ):
     await query.answer()  # before the DB update and the customer notification
+    mensagem_cliente = novo_estado
     try:
         if novo_estado == 'cancelada':
-            encomenda = await services.cancelar_encomenda_db(encomenda_id)
+            # SEC-06: expires an open Stripe session or refunds a paid one before cancelling.
+            mensagem_cliente, encomenda = await services.cancelar_encomenda_db(encomenda_id)
+            if mensagem_cliente == 'invalida':
+                raise ValueError(encomenda_id)
         else:
             encomenda = await services.atualizar_estado_encomenda(encomenda_id, novo_estado)
+    except services.PagamentoRecebido:
+        await responder(
+            query, context,
+            "⚠️ O cliente acabou de pagar esta encomenda, por isso não foi cancelada. "
+            "Aguarda a confirmação do pagamento e cancela de novo para a reembolsar.",
+            kb.teclado_voltar_admin(), parse_mode=None
+        )
+        return
+    except stripe.error.StripeError:
+        logger.exception("Stripe falhou ao cancelar a encomenda #%s", encomenda_id)
+        await responder(
+            query, context,
+            "❌ Não foi possível contactar a Stripe. A encomenda não foi alterada. Tenta novamente.",
+            kb.teclado_voltar_admin(), parse_mode=None
+        )
+        return
     except (Encomenda.DoesNotExist, ValueError):
         await responder(
             query, context,
@@ -156,7 +182,7 @@ async def _mudar_estado_e_notificar(
         )
         return
 
-    notificada = await notificar_cliente(context, encomenda, novo_estado)
+    notificada = await notificar_cliente(context, encomenda, mensagem_cliente)
     await services.registar_auditoria(
         user_id,
         f"ADMIN_{label_acao}_ENCOMENDA",

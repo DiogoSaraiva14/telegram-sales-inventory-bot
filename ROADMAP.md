@@ -17,7 +17,7 @@ Status: draft sequencing from a static code review. Keep the work bounded; do no
 | CI | 1 | Added: GitHub Actions runs check, migration drift and the PostgreSQL suite |
 | Expiry stock release (SEC-04) | 2 | Done for expired sessions; orders that never got a session still hold stock |
 | Webhook idempotency (SEC-05) | 2 | Done with row locks; no notification retry |
-| Cancellation and refunds (SEC-06) | 2 | Open; includes the accepted checkout cancellation window |
+| Cancellation and refunds (SEC-06) | 2 | Done: one cancel operation for both admin surfaces, session expiry, full refunds; closes the checkout cancellation window |
 | Safe settings defaults (SEC-01) | 4 | Done; HTTPS, cookie and HSTS settings still open |
 
 ## Phase 0 — Confirm scope and ownership

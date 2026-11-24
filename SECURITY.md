@@ -3,10 +3,10 @@
 Status: started as a static review of the imported source snapshot. Since then, automated tests have been added for the fixed findings (SEC-02, SEC-03, SEC-13). They run on PostgreSQL with Telegram and Stripe mocked; see README.md. No runtime exploit checks, dependency audit, or deployment review have been run. Priorities below are engineering urgency, not CVSS scores or claims of demonstrated exploitation.
 
 **Finding status (2026-11-24):**
-- **Fixed:** SEC-01, SEC-02 (bot checkout), SEC-04 (expired sessions), SEC-05, SEC-12 and SEC-13.
-- **Mostly fixed:** SEC-03. What remains is deferred to SEC-06.
+- **Fixed:** SEC-01, SEC-02 (bot checkout), SEC-04 (expired sessions), SEC-05, SEC-06, SEC-12 and SEC-13.
+- **Mostly fixed:** SEC-03. What remains: orders that never got a Stripe session hold stock until an admin cancels them.
 - **Partly addressed:** SEC-11. Checkout no longer re-saves products, but other saves still re-encode images.
-- **Open:** SEC-06, SEC-07, SEC-08, SEC-09 and SEC-10.
+- **Open:** SEC-07, SEC-08, SEC-09 and SEC-10.
 
 ## Trust boundaries
 
@@ -44,7 +44,7 @@ Originally: config/settings.py lines 14–20 permitted SECRET_KEY to be absent, 
 - `core/services.py` `reservar_encomenda` writes the order, line, stock decrement, stock movement and audit row in one transaction.
 - It locks the product row (`SELECT … FOR UPDATE`) and refuses the sale when stock is below 1.
 - The PostgreSQL tests T1 and T2 (`core/tests.py`) show two concurrent checkouts waiting on that lock.
-- Still open: Django admin and Telegram admin stock and order changes (SEC-06, SEC-10).
+- Cancellation on both admin surfaces now uses one transactional operation (SEC-06). Still open: admin stock edits and the other order status changes (SEC-10).
 
 Originally: order creation used separate writes, and stock was read early and clamped with max(0, ...).
 
@@ -63,8 +63,8 @@ Originally: order creation used separate writes, and stock was read early and cl
   - an order whose Stripe session was never created (every attempt failed and the customer gave up) still holds its stock; no sweep releases it (see SEC-04);
   - a rendering error after a successful payment-session save leaves no reply, but a retry recovers it;
   - **cancellations that commit before the session is saved** are handled: the bot locks the order row and re-checks it, so no link is shown;
-  - **delivery gap:** the bot releases the order lock once the session is saved, then reads the order line and sends the payment screen. An admin cancellation that commits in that gap (milliseconds, plus Telegram's send time) does not stop the link from reaching the customer. The owner accepted this as deferred to SEC-06, along with expiring the session on cancellation, refunds, and how the webhook treats payments for cancelled orders;
-  - **an order cancelled after its payment link was shown** can still be paid, and the unchanged webhook then confirms it (SEC-06).
+  - **delivery gap (closed by SEC-06):** a link that reaches the customer after an admin cancellation is already expired, because cancelling expires the stored session first;
+  - **an order cancelled after its payment link was shown** cannot be paid any more for the same reason, and a payment that still arrives for a cancelled order is refunded in full (SEC-06).
 
 Product detail (telegram_bot/handlers/customer.py `produto_detalhe`) is fixed: it sends the photo before deleting the old message, and on a missing file, upload error or timeout it edits the old message into the text screen with "(Imagem indisponível)" and the same buttons.
 
@@ -85,11 +85,22 @@ core/views.py lines 45–79 checks payment state, then performs separate payment
 - `checkout.session.completed` now runs `core/services.py` `confirmar_pagamento`: one transaction that locks the order row and then the payment row (the same order as the expiry and checkout code), re-checks the stored session id and payment state, and only then writes the payment, order and audit rows.
 - A concurrent duplicate delivery waits for the lock, then sees `pago` and changes nothing. The Telegram message is sent after the commit, only by the delivery that confirmed the payment, so the customer gets at most one.
 - `checkout.session.expired` uses the same pattern (SEC-04).
-- **Not done:** no event-id table and no notification outbox. A failed Telegram send is logged and not retried, as before. How payments for cancelled orders are treated is SEC-06.
+- **Not done:** no event-id table and no notification outbox. A failed Telegram send is logged and not retried, as before. A payment for a cancelled order is refunded in full (SEC-06).
 
 ### SEC-06 — Cancellation behavior diverges across admin surfaces (High priority)
 
 The Telegram admin flow permits cancelling pending or confirmed orders and restores stock (core/services.py `cancelar_encomenda_db`, called from telegram_bot/handlers/admin.py `_mudar_estado_e_notificar`), but does not update/refund the related Pagamento. Django bulk cancellation only updates Encomenda.estado (core/admin.py lines 110–113), without stock movement, payment state, notification, or audit. Route every cancellation through the same domain operation and define refund handling.
+
+**Status: fixed (owner decisions, 2026-11-24).**
+- Both admin surfaces call `core/services.py` `cancelar_encomenda`: the Telegram admin through `cancelar_encomenda_db`, and the Django admin bulk action once per selected order. Only `pendente` and `confirmada` orders can be cancelled.
+- In one transaction that holds the order row lock across the Stripe calls, it settles the payment first, then returns the stock with `F()` updates and writes stock movement and audit rows:
+  - an open Checkout Session is expired;
+  - a completed session that is not yet confirmed refuses the cancellation (`PagamentoRecebido`), and the admin is told the payment just arrived;
+  - a paid order is refunded in full, with an idempotency key per order and session, and the payment becomes `reembolsado`;
+  - a Stripe error changes nothing, and the admin is told so.
+- The customer gets the cancellation message, or a new refund message for a paid order.
+- A `checkout.session.completed` event for an order that is already cancelled refunds the payment in full, keeps the order cancelled and tells the customer. A refund error answers 500, so Stripe redelivers.
+- **Not covered:** a `pago` payment made outside Stripe cannot be refunded here, so such an order is not cancelled. Refunds are full only. Refund status updates from Stripe (`charge.refunded`, failed refunds) are not handled.
 
 ### SEC-07 — Markdown rendering uses dynamic values without escaping (Medium priority)
 
