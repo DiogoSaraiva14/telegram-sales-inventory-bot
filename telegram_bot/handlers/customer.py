@@ -105,7 +105,6 @@ async def menu_encomendas(query, context, data, user_id):
 
 
 async def encomenda_detalhe(query, context, data, user_id):
-    # Unreachable today: validar_callback rejects user_encomenda_ (SECURITY.md, SEC-12).
     try:
         eid = sanitizar_id(data.split("_")[-1], campo="encomenda_id")
         encomenda = await services.get_encomenda_detalhe(eid)
@@ -275,7 +274,7 @@ EXACT_ROUTES = {
 PREFIX_ROUTES = (
     ("cat_", categoria),
     ("produto_", produto_detalhe),
-    ("user_encomenda_", encomenda_detalhe),
+    ("ver_encomenda_", encomenda_detalhe),
     ("encomendar_", encomendar),
     ("confirmar_encomenda_", confirmar_encomenda),
 )

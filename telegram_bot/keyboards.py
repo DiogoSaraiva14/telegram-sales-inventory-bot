@@ -62,7 +62,7 @@ def teclado_minhas_encomendas(encomendas):
         emoji = ESTADO_EMOJI.get(e.estado, "📦")
         buttons.append([InlineKeyboardButton(
             f"{emoji} #{e.id} — {e.total:.2f}€ — {e.estado}",
-            callback_data=f"user_encomenda_{e.id}"
+            callback_data=f"ver_encomenda_{e.id}"
         )])
     buttons.append([InlineKeyboardButton("🔙 Menu Principal", callback_data="menu_inicio")])
     return InlineKeyboardMarkup(buttons)

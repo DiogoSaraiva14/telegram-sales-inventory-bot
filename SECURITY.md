@@ -6,7 +6,8 @@ Status: started as a static review of the imported source snapshot. Since then, 
 - **Fixed:** SEC-02 (bot checkout) and SEC-13.
 - **Mostly fixed:** SEC-03. What remains is deferred to SEC-06.
 - **Partly addressed:** SEC-11. Checkout no longer re-saves products, but other saves still re-encode images.
-- **Open:** SEC-01, SEC-04, SEC-05, SEC-06, SEC-07, SEC-08, SEC-09, SEC-10 and SEC-12.
+- **Open:** SEC-01, SEC-04, SEC-05, SEC-06, SEC-07, SEC-08, SEC-09 and SEC-10.
+- **Fixed:** SEC-12 (2026-11-24).
 
 ## Trust boundaries
 
@@ -96,7 +97,9 @@ core/models.py lines 48–78 resizes and re-encodes the stored image whenever Pr
 
 ### SEC-12 — Input validation allows known callback prefixes, but route names have drifted (Medium priority)
 
-telegram_bot/keyboards.py `teclado_minhas_encomendas` emits user_encomenda_<id> and telegram_bot/handlers/customer.py `encomenda_detalhe` handles it. security/sanitization.py lines 22–39 does not allow that prefix; it allows ver_encomenda_ instead. The validator at lines 43–54 rejects the generated order-detail callback, so users cannot open order details from their order list.
+**Status: fixed.** The order list now emits `ver_encomenda_<id>`, a prefix already on the allowlist, routed to `encomenda_detalhe`, which still checks that the order belongs to the tapping user. Tests: `OrderDetailTests` in telegram_bot/tests.py.
+
+Originally: telegram_bot/keyboards.py `teclado_minhas_encomendas` emits user_encomenda_<id> and telegram_bot/handlers/customer.py `encomenda_detalhe` handles it. security/sanitization.py lines 22–39 does not allow that prefix; it allows ver_encomenda_ instead. The validator at lines 43–54 rejects the generated order-detail callback, so users cannot open order details from their order list.
 
 ### SEC-13 — Repeated checkout confirmation can create duplicate orders (High priority)
 
