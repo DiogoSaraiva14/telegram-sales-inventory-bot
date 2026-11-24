@@ -72,7 +72,7 @@ The current order flow creates quantity one and a one-line order. This is observ
 - Bot checkout is now transactional in core/services.py. Admin order and stock changes are not yet: that layer should own them too (SEC-06, SEC-10).
 - Make order creation, stock reservation, payment-session persistence, and cancellation atomic or explicitly compensating.
 - Represent payment and order state transitions in one place; both admin interfaces should call the same operations.
-- Make webhook processing idempotent across concurrent/retried events and separate payment state changes from notification delivery.
+- Webhook state changes are idempotent under row locks (SEC-05); notification delivery still has no retry.
 - Split Telegram presentation from domain services so callbacks can be tested without Telegram or PostgreSQL.
 - Select one deployment model and document how the polling bot, Django server, Stripe webhook, PostgreSQL, media storage, and worker/notification retries run together.
 

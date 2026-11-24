@@ -5,8 +5,7 @@ from django.conf import settings
 from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
-from django.utils import timezone
-from .models import Pagamento, Encomenda, RegistoAuditoria
+from .models import Pagamento
 from . import services
 from telegram_bot.constants import MENSAGENS_NOTIFICACAO
 
@@ -55,28 +54,14 @@ def _handle_payment_success(session):
         logger.error("Pagamento não encontrado: session_id=%s", session_id)
         return
 
-    # Prevent duplicate processing
-    if pagamento.estado_pagamento == 'pago':
+    # SEC-05: the state check and every write happen under row locks in one transaction.
+    if pagamento.estado_pagamento == 'pago' or not services.confirmar_pagamento(pagamento.pk, session_id):
         logger.info("Evento duplicado ignorado: session_id=%s", session_id)
         return
 
-    pagamento.estado_pagamento = 'pago'
-    pagamento.data_pagamento = timezone.now()
-    pagamento.save()
-
     encomenda = pagamento.encomenda
-    encomenda.estado = 'confirmada'
-    encomenda.save()
-
-    RegistoAuditoria.objects.create(
-        utilizador=encomenda.utilizador,
-        acao='PAGAMENTO_CONFIRMADO',
-        entidade='Pagamento',
-        descricao=f'Encomenda #{encomenda.id} paga via Stripe (session={session_id})'
-    )
     logger.info("Pagamento confirmado: encomenda_id=%s", encomenda.id)
-
-    # Notify customer via Telegram Bot API directly
+    # After the commit, and only by the delivery that confirmed it: at most one message.
     _notificar_pagamento_telegram(encomenda)
 
 
