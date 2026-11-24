@@ -9,7 +9,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from security.decorators import rate_limit, log_acao
-from security.sanitization import validar_callback, EntradaInvalida
+from security.sanitization import validar_callback, EntradaInvalida, pseudonimo
 from telegram_bot.guards import is_admin, verificar_bloqueio, verificar_sessao
 from telegram_bot.handlers import admin, customer
 
@@ -65,7 +65,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             data = validar_callback(query.data)
         except EntradaInvalida as exc:
-            logger.warning("callback_data inválido de user_id=%s: %s", user_id, exc)
+            logger.warning("callback_data inválido de utilizador=%s: %s", pseudonimo(user_id), exc)
             await query.answer("❌ Pedido inválido.", show_alert=True)
             return
 

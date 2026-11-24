@@ -100,13 +100,13 @@ def _enviar_telegram(encomenda, mensagem):
             "parse_mode": "Markdown",
         }, timeout=10)
         if response.status_code == 200:
-            logger.info("Notificação Telegram enviada: telegram_id=%s encomenda=#%s",
-                        chat_id, encomenda.id)
+            logger.info("Notificação Telegram enviada: encomenda=#%s", encomenda.id)
         else:
             logger.error("Falha na notificação Telegram: status=%s body=%s",
                          response.status_code, response.text)
     except Exception as exc:
-        logger.error("Erro ao enviar notificação Telegram: %s", exc)
+        # Type only: an httpx error message can carry the request URL, which holds the bot token.
+        logger.error("Erro ao enviar notificação Telegram: encomenda=#%s erro=%s", encomenda.id, type(exc).__name__)
 
 
 def _handle_payment_expired(session):

@@ -4,9 +4,11 @@ Status: started as a static review of the imported source snapshot. Since then, 
 
 **Finding status (2026-11-24):**
 - **Fixed:** SEC-01, SEC-02 (bot checkout), SEC-04 (expired sessions), SEC-05, SEC-06, SEC-07, SEC-12 and SEC-13.
-- **Mostly fixed:** SEC-03. What remains: orders that never got a Stripe session hold stock until an admin cancels them.
+- **Mostly fixed:**
+  - SEC-03: orders that never got a Stripe session hold stock until an admin cancels them.
+  - SEC-08: log retention and access are not defined yet.
 - **Partly addressed:** SEC-11. Checkout no longer re-saves products, but other saves still re-encode images.
-- **Open:** SEC-08, SEC-09 and SEC-10.
+- **Open:** SEC-09 and SEC-10.
 
 ## Trust boundaries
 
@@ -117,6 +119,18 @@ The Telegram /start message formats the stored user name as Markdown (telegram_b
 ### SEC-08 — Personal identifiers are written to logs (Medium priority)
 
 security/decorators.py lines 65–72 logs Telegram user IDs and usernames. telegram_bot/ (guards.py, notifications.py) and core/views.py also log Telegram identifiers during notifications and administrative actions. Minimize or pseudonymize identifiers and define log retention/access.
+
+**Status: mostly fixed (2026-11-24).**
+- User-level log lines now carry `utilizador=<label>`: rate limit, unauthorized admin access, actions, expired sessions, blocked users and invalid callbacks.
+  - The label is `security/sanitization.py` `pseudonimo()`, the first 12 hex characters of an HMAC-SHA256 of the Telegram id keyed with `SECRET_KEY`.
+  - It is stable, so one user's lines can be correlated, but it cannot be reversed without the key. A plain hash would not hide short numeric ids.
+  - Rotating `SECRET_KEY` changes every label.
+- Usernames are no longer logged. Notification logs keep only the order id, which leads to the customer in the database.
+- The bot sets the `httpx` logger to WARNING, because at INFO it logs every request URL, and Telegram URLs contain the bot token.
+- The webhook logs only the exception type when a Telegram send fails, for the same reason.
+- **Still open:**
+  - log retention and access, which depend on where the project is deployed;
+  - audit rows in the database (`RegistoAuditoria`), which still hold customer names and Telegram ids in their descriptions and are visible to admins.
 
 ### SEC-09 — Rate limiting and session state are process-local (Medium priority)
 

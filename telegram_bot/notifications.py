@@ -21,13 +21,11 @@ async def notificar_cliente(context: ContextTypes.DEFAULT_TYPE, encomenda, novo_
             parse_mode="Markdown"
         )
         logger.info(
-            "Notificação enviada: encomenda=#%s estado=%s telegram_id=%s",
-            encomenda.id, novo_estado, encomenda.utilizador.telegram_id
+            "Notificação enviada: encomenda=#%s estado=%s", encomenda.id, novo_estado
         )
         return True
     except TelegramError as exc:
         logger.error(
-            "Falha ao notificar cliente: encomenda=#%s telegram_id=%s erro=%s",
-            encomenda.id, encomenda.utilizador.telegram_id, exc
+            "Falha ao notificar cliente: encomenda=#%s erro=%s", encomenda.id, exc
         )
         return False

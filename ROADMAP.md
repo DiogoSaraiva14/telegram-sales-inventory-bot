@@ -20,6 +20,7 @@ Status: draft sequencing from a static code review. Keep the work bounded; do no
 | Cancellation and refunds (SEC-06) | 2 | Done: one cancel operation for both admin surfaces, session expiry, full refunds; closes the checkout cancellation window |
 | Safe settings defaults (SEC-01) | 4 | Done; HTTPS, cookie and HSTS settings still open |
 | Escape dynamic Telegram Markdown (SEC-07) | 4 | Done; not checked against live Telegram |
+| No raw Telegram ids, usernames or bot token in logs (SEC-08) | 4 | Done; retention and access still to define |
 
 ## Phase 0 — Confirm scope and ownership
 

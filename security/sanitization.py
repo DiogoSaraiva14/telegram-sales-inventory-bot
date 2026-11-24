@@ -1,11 +1,24 @@
+import hashlib
+import hmac
 import re
 import logging
+
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
 
 class EntradaInvalida(Exception):
     pass
+
+
+def pseudonimo(telegram_id) -> str:
+    """Log label for a Telegram user (SEC-08): stable, but not reversible without SECRET_KEY.
+
+    Keyed, because Telegram ids are short numbers that a plain hash would not hide.
+    Rotating SECRET_KEY changes every label.
+    """
+    return hmac.new(settings.SECRET_KEY.encode(), str(telegram_id).encode(), hashlib.sha256).hexdigest()[:12]
 
 
 # ── Allowed callback exact values ──────────────────────────────────────────
