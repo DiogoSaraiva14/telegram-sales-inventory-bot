@@ -21,6 +21,18 @@ from telegram_bot.handlers.callbacks import encontrar_rota
 UNROUTED_PREFIXES = {"cancelar_encomenda_"}
 
 
+class StartupConfigTests(SimpleTestCase):
+    def test_bot_refuses_to_start_with_missing_settings(self):
+        from telegram_bot import app
+        self.assertEqual(app.variaveis_em_falta({"TELEGRAM_TOKEN": "x", "STRIPE_SECRET_KEY": ""}),
+                         ["STRIPE_SECRET_KEY", "STRIPE_SUCCESS_URL", "STRIPE_CANCEL_URL"])
+        completo = {nome: "x" for nome in app.VARIAVEIS_OBRIGATORIAS}
+        self.assertEqual(app.variaveis_em_falta(completo), [])
+        with patch.object(app, "variaveis_em_falta", return_value=["TELEGRAM_TOKEN"]), \
+             self.assertRaisesMessage(SystemExit, "TELEGRAM_TOKEN"):
+            app.main()
+
+
 class RoutingTests(SimpleTestCase):
     def test_every_allowed_callback_has_one_route(self):
         for data in ALLOWED_EXACT:

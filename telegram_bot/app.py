@@ -10,8 +10,18 @@ from telegram_bot.handlers.commands import start, admin_command
 
 logger = logging.getLogger(__name__)
 
+# Settings the bot itself needs; Django's own required ones are checked in config/settings.py.
+VARIAVEIS_OBRIGATORIAS = ("TELEGRAM_TOKEN", "STRIPE_SECRET_KEY", "STRIPE_SUCCESS_URL", "STRIPE_CANCEL_URL")
+
+
+def variaveis_em_falta(ambiente=os.environ):
+    return [nome for nome in VARIAVEIS_OBRIGATORIAS if not ambiente.get(nome)]
+
 
 def main():
+    em_falta = variaveis_em_falta()
+    if em_falta:
+        raise SystemExit(f"Faltam variáveis de ambiente: {', '.join(em_falta)}. Vê .env.example.")
     if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 

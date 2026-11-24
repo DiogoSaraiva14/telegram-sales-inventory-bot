@@ -15,6 +15,32 @@ Code changes since import, in order:
 
 **Tests:** telegram_bot/tests.py (mock-only) covers callback routing, the admin gate, single answers, the checkout handler branches and the customer order-detail screen (SEC-12). core/tests.py runs on PostgreSQL. It covers order reservation, payment-session recovery and replacement, the unchanged webhook, two end-to-end handler tests, and three threaded concurrency tests. Those prove the product row lock and the order-row lock that a concurrent cancellation takes. Stripe and Telegram are mocked; nothing has been run against a live bot or Stripe.
 
+## Local setup
+
+These steps match how the checks were run on Windows with Python 3.13 and PostgreSQL 17. Other versions are untested. Nothing has been run against a live Telegram bot or Stripe yet.
+
+1. **Python environment:**
+   ```powershell
+   python -m venv .venv
+   .venv\Scripts\Activate.ps1
+   pip install -r requirements.txt
+   ```
+2. **PostgreSQL:** create a role with `LOGIN` and `CREATEDB` (not superuser), for example `telegram_bot_test`, either in pgAdmin or with `createuser --createdb --pwprompt`. To run the bot, also create a database it owns (`createdb -O telegram_bot_test telegram_bot`). The tests only need `CREATEDB`.
+3. **Settings:** copy `.env.example` to `.env` and fill it in. `.env` is git-ignored.
+   - Every command needs `SECRET_KEY` and `DB_NAME`.
+   - The bot also needs `TELEGRAM_TOKEN`, `STRIPE_SECRET_KEY`, `STRIPE_SUCCESS_URL` and `STRIPE_CANCEL_URL`. It refuses to start and lists what is missing.
+   - Use Stripe test-mode keys only.
+4. **Database:**
+   ```powershell
+   python manage.py migrate
+   python manage.py createsuperuser
+   ```
+5. **Django admin and Stripe webhook:** run `python manage.py runserver`. The admin is at `/admin/` and the webhook at `/webhook/stripe/`. For local Stripe tests, the Stripe CLI can forward events: run `stripe listen --forward-to localhost:8000/webhook/stripe/` and put the `whsec_…` secret it prints in `STRIPE_WEBHOOK_SECRET`.
+6. **Bot:** run `python bot.py`.
+7. **Tests:**
+   - `python manage.py test core telegram_bot` needs the PostgreSQL role from step 2; Django creates and drops `test_<DB_NAME>` itself.
+   - `python manage.py test telegram_bot` alone needs no database server.
+
 ## Running and project layout
 
 Start the bot with `python bot.py`. It loads .env, sets up Django, then starts polling. Run the Django admin and Stripe webhook separately with `python manage.py runserver`.
@@ -72,9 +98,9 @@ Python, Django, PostgreSQL, python-telegram-bot, Stripe, Pillow, and python-dote
 
 ## Configuration
 
-The source reads Django, PostgreSQL, Telegram, and Stripe settings from environment variables. The names currently referenced include SECRET_KEY, DEBUG, DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, TELEGRAM_TOKEN, ADMIN_TELEGRAM_IDS, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_SUCCESS_URL, and STRIPE_CANCEL_URL.
+All settings come from environment variables. `.env.example` lists every one with a placeholder and says which commands need it. `config/settings.py` refuses to start without `SECRET_KEY` and `DB_NAME`, and `python bot.py` refuses to start without its Telegram and Stripe settings.
 
-There is no committed environment example or validated startup guide yet. Do not put real values in this repository. Configuration defaults need hardening before a public or production deployment.
+Do not put real values in this repository. `DEBUG` still defaults to True, and `ALLOWED_HOSTS` is `['*']`. Both need hardening before a public or production deployment (SECURITY.md SEC-01).
 
 ## Review priorities
 
