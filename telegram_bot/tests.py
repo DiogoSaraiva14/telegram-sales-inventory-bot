@@ -361,7 +361,7 @@ class PhotoFallbackTests(SimpleTestCase):
     async def _show(self, image_path, send_photo_error=None, delete_error=None):
         produto = SimpleNamespace(
             id=7, nome="SSD", preco=Decimal("50.00"), stock_atual=3, descricao=None,
-            categoria="ssd", imagem=SimpleNamespace(path=image_path),
+            categoria="ssd", imagem=SimpleNamespace(open=lambda mode: open(image_path, mode)),
         )
         query = MagicMock()
         query.answer = AsyncMock()

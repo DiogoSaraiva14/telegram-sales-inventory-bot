@@ -1151,3 +1151,54 @@ class AdminInvariantTests(TestCase):
         async_to_sync(services.ajustar_stock_manual)(produto, 1)
         self.assertEqual(produto.stock_atual, 3)
         self.assertEqual(Produto.objects.get(pk=produto.pk).stock_atual, 3)
+
+
+# ── Product images are processed once, on upload, through storage (SEC-11) ─
+
+class ImagemProdutoTests(TestCase):
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        pasta = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, pasta, ignore_errors=True)
+        definicoes = override_settings(MEDIA_ROOT=pasta)
+        definicoes.enable()
+        self.addCleanup(definicoes.disable)
+
+    def upload(self, tamanho=(1200, 600), formato="PNG", nome="foto.png"):
+        from io import BytesIO
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from PIL import Image
+        dados = BytesIO()
+        Image.new("RGBA", tamanho, (200, 10, 10, 255)).save(dados, formato)
+        return SimpleUploadedFile(nome, dados.getvalue(), content_type="image/png")
+
+    def test_i1_new_upload_becomes_an_800px_square_jpeg(self):
+        from PIL import Image
+        produto = Produto.objects.create(nome="GPU", preco=Decimal("10.00"), stock_atual=3, imagem=self.upload())
+        self.assertTrue(produto.imagem.name.startswith("produtos/") and produto.imagem.name.endswith(".jpg"))
+        with produto.imagem.open("rb") as ficheiro, Image.open(ficheiro) as img:
+            self.assertEqual((img.format, img.size, img.mode), ("JPEG", (800, 800), "RGB"))
+
+    def test_i2_ordinary_saves_leave_the_stored_image_alone(self):
+        produto = Produto.objects.create(nome="GPU", preco=Decimal("10.00"), stock_atual=3, imagem=self.upload())
+        with produto.imagem.open("rb") as ficheiro:
+            antes = ficheiro.read()
+        nome = produto.imagem.name
+        with patch.object(Produto, "_preparar_imagem") as preparar:
+            produto = Produto.objects.get(pk=produto.pk)
+            produto.nome, produto.ativo = "GPU 2", False
+            produto.save()
+        preparar.assert_not_called()
+        produto.refresh_from_db()
+        self.assertEqual(produto.imagem.name, nome)
+        with produto.imagem.open("rb") as ficheiro:
+            self.assertEqual(ficheiro.read(), antes)
+
+    def test_i3_replacing_the_image_processes_the_new_one(self):
+        produto = Produto.objects.create(nome="GPU", preco=Decimal("10.00"), stock_atual=3, imagem=self.upload())
+        produto.imagem = self.upload(tamanho=(300, 900), nome="nova.png")
+        produto.save()
+        self.assertTrue(produto.imagem.name.startswith("produtos/nova"))
+        self.assertTrue(produto.imagem.name.endswith(".jpg"))
