@@ -16,7 +16,7 @@ Status: draft sequencing from a static code review. Keep the work bounded; do no
 | `.env.example`, environment validation, setup guide | 1 | Done (Python version documented as the one tested: 3.13) |
 | CI | 1 | Added: GitHub Actions runs check, migration drift and the PostgreSQL suite |
 | Expiry stock release (SEC-04), webhook idempotency (SEC-05), cancellation and refunds (SEC-06) | 2 | Open; SEC-06 includes the accepted checkout cancellation window |
-| Safe settings defaults (SEC-01) | 4 | Open |
+| Safe settings defaults (SEC-01) | 4 | Done; HTTPS, cookie and HSTS settings still open |
 
 ## Phase 0 — Confirm scope and ownership
 

@@ -22,9 +22,12 @@ def _obrigatoria(nome):
 SECRET_KEY = _obrigatoria('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DEBUG', 'True') == 'True'
+# Off unless explicitly enabled, so a deployment that forgets DEBUG is not exposed (SEC-01).
+DEBUG = os.getenv('DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = ['*']
+# Comma-separated host names. Empty means Django serves nothing when DEBUG is off
+# (and only localhost when it is on); the bot itself serves no HTTP and needs none.
+ALLOWED_HOSTS = [h.strip() for h in os.getenv('ALLOWED_HOSTS', '').split(',') if h.strip()]
 
 
 # Application definition
