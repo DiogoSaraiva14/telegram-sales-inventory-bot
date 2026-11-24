@@ -3,12 +3,12 @@
 Status: started as a static review of the imported source snapshot. Since then, automated tests have been added for the fixed findings (SEC-02, SEC-03, SEC-13). They run on PostgreSQL with Telegram and Stripe mocked; see README.md. No runtime exploit checks, dependency audit, or deployment review have been run. Priorities below are engineering urgency, not CVSS scores or claims of demonstrated exploitation.
 
 **Finding status (2026-11-24):**
-- **Fixed:** SEC-01, SEC-02 (bot checkout), SEC-04 (expired sessions), SEC-05, SEC-06, SEC-07, SEC-09, SEC-12 and SEC-13.
+- **Fixed:** SEC-01, SEC-02 (bot checkout), SEC-04 (expired sessions), SEC-05, SEC-06, SEC-07, SEC-09, SEC-10, SEC-12 and SEC-13.
 - **Mostly fixed:**
   - SEC-03: orders that never got a Stripe session hold stock until an admin cancels them.
   - SEC-08: log retention and access are not defined yet.
 - **Partly addressed:** SEC-11. Checkout no longer re-saves products, but other saves still re-encode images.
-- **Open:** SEC-10.
+- **Open:** none of SEC-01 to SEC-13.
 
 ## Trust boundaries
 
@@ -46,7 +46,7 @@ Originally: config/settings.py lines 14–20 permitted SECRET_KEY to be absent, 
 - `core/services.py` `reservar_encomenda` writes the order, line, stock decrement, stock movement and audit row in one transaction.
 - It locks the product row (`SELECT … FOR UPDATE`) and refuses the sale when stock is below 1.
 - The PostgreSQL tests T1 and T2 (`core/tests.py`) show two concurrent checkouts waiting on that lock.
-- Cancellation on both admin surfaces now uses one transactional operation (SEC-06). Still open: admin stock edits and the other order status changes (SEC-10).
+- Admin cancellation (SEC-06), status steps and stock edits (SEC-10) also run as transactions in `core/services.py`, under the same row locks.
 
 Originally: order creation used separate writes, and stock was read early and clamped with max(0, ...).
 
@@ -147,6 +147,22 @@ security/decorators.py lines 13–43 and telegram_bot/guards.py store rate and s
 ### SEC-10 — Admin order editing can bypass domain invariants (Medium priority)
 
 core/admin.py lines 70–84 exposes editable order-line fields while Encomenda.total is readonly. LinhaEncomenda.save recalculates its subtotal (core/models.py lines 112–132), but does not recalculate the order total or stock/payment state. Django bulk status actions also bypass notification/audit/domain operations. Make order records read-only or use shared validated domain actions.
+
+**Status: fixed (owner decisions, 2026-11-24).**
+- **Read-only records:** in the Django admin, orders, order lines and payments are view-only. They cannot be added, edited or deleted, except the internal `notas` field of an order.
+- **Status changes:** both admin surfaces use `avancar_estado_encomenda`.
+  - Changes go forward only: `confirmada` → `enviada` → `entregue`. Each step locks the order row, checks the current state, writes an audit row, and then messages the customer.
+  - There is no manual confirm. Only the Stripe webhook confirms an order: the Telegram "Confirmar" button, its callback prefix and the Django confirm action are removed.
+  - A cancelled or delivered order cannot be moved, and a stale button is refused.
+- **Stock:** `ajustar_stock` adds a difference under the product row lock, never below zero, and records the amount actually applied as a stock movement.
+  - The Telegram stock buttons use it.
+  - The Django product form turns a stock edit into the same difference (new value minus the value shown in the form), with an audit row. Its other fields are saved without writing `stock_atual`.
+  - The Telegram product toggle now writes only `ativo`.
+  - Before this change, these paths could overwrite a checkout that happened at the same moment.
+- **Not covered:**
+  - creating a product with initial stock writes no stock movement;
+  - stock movements and audit rows can still be edited or deleted in the Django admin;
+  - Django product saves still re-encode images (SEC-11).
 
 ### SEC-11 — Product images are reprocessed on ordinary model saves (Medium priority)
 

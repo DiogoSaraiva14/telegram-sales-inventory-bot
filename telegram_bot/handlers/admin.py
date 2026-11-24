@@ -158,6 +158,8 @@ async def _mudar_estado_e_notificar(
                 raise ValueError(encomenda_id)
         else:
             encomenda = await services.atualizar_estado_encomenda(encomenda_id, novo_estado)
+            if encomenda is None:  # not the required previous state (SEC-10)
+                raise ValueError(encomenda_id)
     except services.PagamentoRecebido:
         await responder(
             query, context,
@@ -276,7 +278,6 @@ PREFIX_ROUTES = (
     ("admin_stock_produto_", stock_produto),
     ("admin_stock_adj_", stock_ajuste),
     ("admin_ver_encomenda_", encomenda_detalhe),
-    ("admin_enc_confirmar_", _mudar_estado('confirmada', 'CONFIRMAR')),
     ("admin_enc_enviada_", _mudar_estado('enviada', 'ENVIAR')),
     ("admin_enc_entregue_", _mudar_estado('entregue', 'ENTREGAR')),
     ("admin_enc_cancelar_", _mudar_estado('cancelada', 'CANCELAR')),

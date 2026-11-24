@@ -64,7 +64,7 @@ def _handle_payment_success(session):
     encomenda = pagamento.encomenda
     if resultado == 'reembolsada':
         logger.warning("Pagamento de encomenda cancelada reembolsado: encomenda_id=%s", encomenda.id)
-        notificar_cancelamento(encomenda, resultado)
+        notificar_estado(encomenda, resultado)
         return
     logger.info("Pagamento confirmado: encomenda_id=%s", encomenda.id)
     # After the commit, and only by the delivery that confirmed it: at most one message.
@@ -80,9 +80,9 @@ def _notificar_pagamento_telegram(encomenda):
     ))
 
 
-def notificar_cancelamento(encomenda, resultado):
-    """resultado: "cancelada" or "reembolsada" (the key of the customer message)."""
-    _enviar_telegram(encomenda, MENSAGENS_NOTIFICACAO[resultado].format(id=encomenda.id, total=float(encomenda.total)))
+def notificar_estado(encomenda, chave):
+    """Customer message for an order state; chave is a MENSAGENS_NOTIFICACAO key."""
+    _enviar_telegram(encomenda, MENSAGENS_NOTIFICACAO[chave].format(id=encomenda.id, total=float(encomenda.total)))
 
 
 def _enviar_telegram(encomenda, mensagem):
@@ -127,4 +127,4 @@ def _handle_payment_expired(session):
     cancelada = services.cancelar_por_expiracao(pagamento.pk, session_id)
     logger.info("Pagamento expirado: encomenda_id=%s cancelada=%s", pagamento.encomenda_id, cancelada)
     if cancelada:  # the transaction has committed, so the customer is told only about a real cancellation
-        notificar_cancelamento(pagamento.encomenda, 'cancelada')
+        notificar_estado(pagamento.encomenda, 'cancelada')

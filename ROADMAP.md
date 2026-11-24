@@ -9,7 +9,7 @@ Status: draft sequencing from a static code review. Keep the work bounded; do no
 | Split bot.py into routing, keyboards/presentation and services | 3 | Done |
 | Answer each Telegram callback once | — | Done |
 | Product screen survives a missing or failed photo | 4 (partly) | Done |
-| Transactional order creation with a product row lock (no oversell) | 2 | Done for bot checkout; admin paths still open |
+| Transactional order creation with a product row lock (no oversell) | 2 | Done for checkout, admin cancellation, status steps and stock edits (SEC-10) |
 | One order per Confirm screen, recoverable Stripe sessions | 2 | Done (SEC-13, SEC-03) |
 | Tests for callback routing, admin gate, checkout | 1 | Done: mock tests plus PostgreSQL tests (`manage.py test core telegram_bot`) |
 | Fix the order-detail callback mismatch (SEC-12) | 1 | Done |

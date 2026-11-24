@@ -575,3 +575,25 @@ class InProcessStateTests(SimpleTestCase):
             self.assertEqual(set(guards._ultima_atividade), {999})
             self.assertTrue(guards._sessao_expirada(1))
             self.assertFalse(guards._sessao_expirada(999))
+
+
+class AdminStatusHandlerTests(SimpleTestCase):
+    """SEC-10: no manual confirm button, and refused status steps are reported."""
+
+    def test_pending_order_has_no_confirm_button_and_old_buttons_are_rejected(self):
+        from security.sanitization import EntradaInvalida
+        botoes = _botoes(keyboards.teclado_acoes_encomenda(SimpleNamespace(id=5, estado="pendente")))
+        self.assertNotIn("admin_enc_confirmar_5", [dados for _, dados in botoes])
+        self.assertIn("admin_enc_cancelar_5", [dados for _, dados in botoes])
+        with self.assertRaises(EntradaInvalida):
+            validar_callback("admin_enc_confirmar_5")
+
+    async def test_refused_step_reports_invalid_state(self):
+        query = MagicMock()
+        query.answer = AsyncMock()
+        responder, notificar = AsyncMock(), AsyncMock()
+        with patch.object(admin.services, "atualizar_estado_encomenda", AsyncMock(return_value=None)), \
+             patch.object(admin, "responder", responder), patch.object(admin, "notificar_cliente", notificar):
+            await admin._mudar_estado_e_notificar(query, MagicMock(), 1, 5, "enviada", "ENVIAR")
+        self.assertIn("não encontrada ou estado inválido", responder.await_args.args[2])
+        notificar.assert_not_awaited()

@@ -183,7 +183,6 @@ def teclado_acoes_encomenda(encomenda):
     buttons = []
     estado = encomenda.estado
     if estado == 'pendente':
-        buttons.append([InlineKeyboardButton("✅ Confirmar", callback_data=f"admin_enc_confirmar_{encomenda.id}")])
         buttons.append([InlineKeyboardButton("❌ Cancelar",  callback_data=f"admin_enc_cancelar_{encomenda.id}")])
     elif estado == 'confirmada':
         buttons.append([InlineKeyboardButton("🚚 Marcar Enviada", callback_data=f"admin_enc_enviada_{encomenda.id}")])

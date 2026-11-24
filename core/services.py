@@ -72,18 +72,29 @@ async def get_todos_produtos():
 
 async def alternar_produto_ativo(produto):
     produto.ativo = not produto.ativo
-    await sync_to_async(produto.save)()
+    # update(), not save(): a full save would write back a stale stock_atual (SEC-10).
+    await sync_to_async(Produto.objects.filter(pk=produto.pk).update)(ativo=produto.ativo)
+
+def ajustar_stock(produto_id: int, delta: int, observacoes: str) -> int:
+    """Add delta to a product's stock under its row lock, never below zero (SEC-10).
+
+    Writes one stock movement for the amount actually applied and returns the new stock.
+    The lock is the one checkout takes, so neither change is lost.
+    """
+    with transaction.atomic():
+        atual = Produto.objects.select_for_update().values_list('stock_atual', flat=True).get(pk=produto_id)
+        novo = max(0, atual + delta)
+        if novo != atual:
+            Produto.objects.filter(pk=produto_id).update(stock_atual=novo)
+            MovimentoStock.objects.create(
+                produto_id=produto_id, tipo_movimento='entrada' if novo > atual else 'saida',
+                quantidade=abs(novo - atual), observacoes=observacoes,
+            )
+    return novo
 
 async def ajustar_stock_manual(produto, delta: int):
-    produto.stock_atual = max(0, produto.stock_atual + delta)
-    await sync_to_async(produto.save)()
-    tipo = "entrada" if delta > 0 else "saida"
-    await sync_to_async(MovimentoStock.objects.create)(
-        produto=produto,
-        tipo_movimento=tipo,
-        quantidade=abs(delta),
-        observacoes=f"Ajuste manual via bot admin (delta={delta})"
-    )
+    produto.stock_atual = await sync_to_async(ajustar_stock)(
+        produto.id, delta, f"Ajuste manual via bot admin (delta={delta})")
 
 
 # ── Encomendas ─────────────────────────────────────────────────────────────
@@ -114,13 +125,30 @@ async def get_linhas_encomenda(encomenda):
 async def cancelar_encomenda_db(encomenda_id: int, origem: str = 'admin Telegram'):
     return await sync_to_async(cancelar_encomenda)(encomenda_id, origem)
 
-async def atualizar_estado_encomenda(encomenda_id: int, novo_estado: str):
-    encomenda = await sync_to_async(
-        Encomenda.objects.select_related('utilizador').get
-    )(id=encomenda_id)
-    encomenda.estado = novo_estado
-    await sync_to_async(encomenda.save)()
+# Admin status steps (SEC-10, owner decision 2026-11-24): forward only. Orders are confirmed
+# only by the Stripe webhook, and cancelled only by cancelar_encomenda.
+ESTADO_ANTERIOR = {'enviada': 'confirmada', 'entregue': 'enviada'}
+
+def avancar_estado_encomenda(encomenda_id: int, novo_estado: str, origem: str = ''):
+    """Move an order one step forward; returns it, or None if missing or not in the required state."""
+    anterior = ESTADO_ANTERIOR.get(novo_estado)
+    if anterior is None:
+        return None
+    with transaction.atomic():
+        encomenda = (Encomenda.objects.select_for_update(of=('self',)).select_related('utilizador')
+                     .filter(pk=encomenda_id, estado=anterior).first())
+        if encomenda is None:
+            return None
+        encomenda.estado = novo_estado
+        encomenda.save(update_fields=['estado', 'data_atualizacao'])
+        RegistoAuditoria.objects.create(
+            utilizador=encomenda.utilizador, acao=f'ENCOMENDA_{novo_estado.upper()}', entidade='Encomenda',
+            descricao=f'#{encomenda.id} {anterior} -> {novo_estado} ({origem or "admin"})',
+        )
     return encomenda
+
+async def atualizar_estado_encomenda(encomenda_id: int, novo_estado: str):
+    return await sync_to_async(avancar_estado_encomenda)(encomenda_id, novo_estado, 'admin Telegram')
 
 
 # ── Auditoria ──────────────────────────────────────────────────────────────
