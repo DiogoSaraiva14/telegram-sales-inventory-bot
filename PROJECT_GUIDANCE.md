@@ -33,8 +33,8 @@ The strongest potential portfolio story is an end-to-end order and inventory wor
 - **Stock:** reserved when the order is created. Checkout is refused when stock is insufficient, never clamped at zero.
 - **Audit:** written in the same transaction as the order.
 - **Price:** charged as saved on the order (price snapshot), and the product name is snapshotted on the order line. Stripe gets no product description.
-- **Expired sessions:** an expired, unpaid Stripe Checkout Session is replaced with a new one. A completed session waiting for the webhook is never replaced; the customer is told not to pay again.
-- **Still open:** releasing stock for abandoned or expired orders (SEC-04).
+- **Expired sessions:** an expired, unpaid Stripe Checkout Session is replaced with a new one if the customer retries before the expiry webhook arrives. A completed session waiting for the webhook is never replaced; the customer is told not to pay again.
+- **Expiry webhook (SEC-04, owner decision, 2026-11-24):** it cancels the unpaid order, returns its stock in the same transaction, and notifies the customer with the existing cancellation message. No scheduler. Orders that never got a session still hold stock.
 - **Deferred to SEC-06 (owner decision, 2026-11-22):** expiring the Stripe session when an order is cancelled, refunds, and how the webhook treats payments for cancelled orders. Until then, a cancelled order may still be paid and confirmed, so the project stays an unvalidated portfolio project, not production-ready.
 
 ## Business rules to confirm before redesign

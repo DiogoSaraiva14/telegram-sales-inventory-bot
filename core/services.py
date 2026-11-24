@@ -333,3 +333,43 @@ def garantir_sessao_pagamento(encomenda):
 
 async def garantir_sessao_pagamento_async(encomenda):
     return await sync_to_async(garantir_sessao_pagamento)(encomenda)
+
+
+# ── Expiração do pagamento (SEC-04) ────────────────────────────────────────
+
+def cancelar_por_expiracao(pagamento_id: int, sessao_id: str) -> bool:
+    """A Stripe Checkout Session expired: cancel its order and return the stock.
+
+    All in one transaction, under the order row lock that payment-session code also
+    takes (so a concurrent replacement either finished first, and this session is no
+    longer the stored one, or waits and then sees the order cancelled). Marks the payment
+    "falhado" in every case. Returns True only if the order was cancelled now.
+    """
+    with transaction.atomic():
+        encomenda_id = Pagamento.objects.values_list('encomenda_id', flat=True).get(pk=pagamento_id)
+        encomenda = Encomenda.objects.select_for_update().get(pk=encomenda_id)
+        pagamento = Pagamento.objects.select_for_update().get(pk=pagamento_id)
+        if pagamento.stripe_session_id != sessao_id or pagamento.estado_pagamento != 'pendente':
+            return False  # replaced meanwhile, or already paid/failed: nothing to do
+        pagamento.estado_pagamento = 'falhado'
+        pagamento.save(update_fields=['estado_pagamento'])
+        RegistoAuditoria.objects.create(
+            utilizador=encomenda.utilizador, acao='PAGAMENTO_EXPIRADO', entidade='Pagamento',
+            descricao=f'Encomenda #{encomenda.id} expirou sem pagamento',
+        )
+        if encomenda.estado != 'pendente':
+            return False  # e.g. already cancelled by an admin, who returned the stock then
+        for linha in encomenda.linhas.all():
+            # update() instead of Produto.save(): no image access (B3) and no lost update.
+            Produto.objects.filter(pk=linha.produto_id).update(stock_atual=F('stock_atual') + linha.quantidade)
+            MovimentoStock.objects.create(
+                produto_id=linha.produto_id, tipo_movimento='entrada', quantidade=linha.quantidade,
+                observacoes=f"Pagamento expirado — Encomenda #{encomenda.id}",
+            )
+        encomenda.estado = 'cancelada'
+        encomenda.save(update_fields=['estado', 'data_atualizacao'])
+        RegistoAuditoria.objects.create(
+            utilizador=encomenda.utilizador, acao='CANCELAR_ENCOMENDA_EXPIRADA', entidade='Encomenda',
+            descricao=f'#{encomenda.id} cancelada e stock devolvido após expiração do pagamento',
+        )
+    return True

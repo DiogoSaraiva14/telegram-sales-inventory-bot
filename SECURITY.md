@@ -3,10 +3,10 @@
 Status: started as a static review of the imported source snapshot. Since then, automated tests have been added for the fixed findings (SEC-02, SEC-03, SEC-13). They run on PostgreSQL with Telegram and Stripe mocked; see README.md. No runtime exploit checks, dependency audit, or deployment review have been run. Priorities below are engineering urgency, not CVSS scores or claims of demonstrated exploitation.
 
 **Finding status (2026-11-24):**
-- **Fixed:** SEC-01, SEC-02 (bot checkout), SEC-12 and SEC-13.
+- **Fixed:** SEC-01, SEC-02 (bot checkout), SEC-04 (expired sessions), SEC-12 and SEC-13.
 - **Mostly fixed:** SEC-03. What remains is deferred to SEC-06.
 - **Partly addressed:** SEC-11. Checkout no longer re-saves products, but other saves still re-encode images.
-- **Open:** SEC-04, SEC-05, SEC-06, SEC-07, SEC-08, SEC-09 and SEC-10.
+- **Open:** SEC-05, SEC-06, SEC-07, SEC-08, SEC-09 and SEC-10.
 
 ## Trust boundaries
 
@@ -60,7 +60,7 @@ Originally: order creation used separate writes, and stock was read early and cl
   - A completed session waiting for the webhook gets a "don't pay again" screen and is never replaced.
 - **Missing product image:** checkout no longer fails, because stock is decremented with an `update()` and never calls `Produto.save()`.
 - **Still open:**
-  - abandoned orders still hold their stock (SEC-04);
+  - an order whose Stripe session was never created (every attempt failed and the customer gave up) still holds its stock; no sweep releases it (see SEC-04);
   - a rendering error after a successful payment-session save leaves no reply, but a retry recovers it;
   - **cancellations that commit before the session is saved** are handled: the bot locks the order row and re-checks it, so no link is shown;
   - **delivery gap:** the bot releases the order lock once the session is saved, then reads the order line and sends the payment screen. An admin cancellation that commits in that gap (milliseconds, plus Telegram's send time) does not stop the link from reaching the customer. The owner accepted this as deferred to SEC-06, along with expiring the session on cancellation, refunds, and how the webhook treats payments for cancelled orders;
@@ -70,7 +70,12 @@ Product detail (telegram_bot/handlers/customer.py `produto_detalhe`) is fixed: i
 
 ### SEC-04 — Expired Checkout does not resolve order or inventory (High priority)
 
-core/views.py lines 112–134 marks the Pagamento failed and writes audit, but leaves the Encomenda pending and does not restore the stock consumed at order creation. Define a single expiry/cancellation policy and make its state and stock effects atomic.
+**Status: fixed for expired sessions (owner decision, 2026-11-24).**
+- A `checkout.session.expired` event for the session stored on the order now, in one transaction under the order row lock (`core/services.py` `cancelar_por_expiracao`), marks the payment `falhado`, cancels the order, returns each line's quantity to stock with an `F()` update, and writes a stock movement and audit rows.
+- After the commit, the customer gets the existing "cancelada" Telegram message.
+- Events for a replaced session id, a payment that is no longer `pendente`, or an order that is no longer `pendente` change no stock; a duplicate event therefore changes nothing.
+- A retry of a cancelled order gets no new session. Replacing an expired session (D19) now happens only if the customer retries before the expiry webhook arrives.
+- **Still open:** an order with no Stripe session at all holds its stock until an admin cancels it; releasing that needs a scheduled sweep. The reused message ends with "Se não solicitaste este cancelamento, contacta o suporte.", which may read oddly for an expiry.
 
 ### SEC-05 — Webhook idempotency is not atomic (High priority)
 
