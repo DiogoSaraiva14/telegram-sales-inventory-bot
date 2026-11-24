@@ -661,3 +661,87 @@ class ConcurrentCheckoutTests(TransactionTestCase):
         self.assertEqual(resultados["bot"], ("nao_ativa", None))
         self.assertFalse(Pagamento.objects.exists())
         self.assertEqual(Encomenda.objects.get(pk=encomenda.pk).estado, "cancelada")
+
+
+# ── Expiry cancels the unpaid order and returns stock (SEC-04) ─────────────
+
+@override_settings(TELEGRAM_TOKEN="test-token", **URLS_A)
+class ExpiracaoPagamentoTests(TestCase):
+
+    def setUp(self):
+        from core.views import _handle_payment_expired
+        self.expirar = _handle_payment_expired
+        self.produto = criar_produto(stock=5)
+        _, self.encomenda = services.reservar_encomenda(utilizador_telegram(7007), self.produto.id, nova_chave())
+        self.pagamento = Pagamento.objects.create(
+            encomenda=self.encomenda, metodo="stripe", valor=self.encomenda.total,
+            estado_pagamento="pendente", stripe_session_id="cs_exp")
+        envio = patch("core.views.httpx.post", return_value=MagicMock(status_code=200))
+        self.post = envio.start()
+        self.addCleanup(envio.stop)
+
+    def stock(self):
+        return Produto.objects.get(pk=self.produto.pk).stock_atual
+
+    def estado(self):
+        return (Encomenda.objects.get(pk=self.encomenda.pk).estado,
+                Pagamento.objects.get(pk=self.pagamento.pk).estado_pagamento)
+
+    def test_x1_expiry_cancels_order_returns_stock_and_notifies(self):
+        self.assertEqual(self.stock(), 4)
+        self.expirar({"id": "cs_exp"})
+        self.assertEqual(self.estado(), ("cancelada", "falhado"))
+        self.assertEqual(self.stock(), 5)
+        self.assertEqual(MovimentoStock.objects.filter(tipo_movimento="entrada").count(), 1)
+        self.assertEqual(set(RegistoAuditoria.objects.values_list("acao", flat=True)),
+                         {"CRIAR_ENCOMENDA", "PAGAMENTO_EXPIRADO", "CANCELAR_ENCOMENDA_EXPIRADA"})
+        self.post.assert_called_once()
+        corpo = self.post.call_args.kwargs["json"]
+        self.assertEqual(corpo["chat_id"], "7007")
+        self.assertIn("A tua encomenda foi cancelada", corpo["text"])
+
+    def test_x2_duplicate_expiry_event_changes_nothing_twice(self):
+        self.expirar({"id": "cs_exp"})
+        self.expirar({"id": "cs_exp"})
+        self.assertEqual(self.stock(), 5)
+        self.assertEqual(MovimentoStock.objects.filter(tipo_movimento="entrada").count(), 1)
+        self.post.assert_called_once()
+
+    def test_x3_order_already_cancelled_keeps_stock_and_sends_nothing(self):
+        Encomenda.objects.filter(pk=self.encomenda.pk).update(estado="cancelada")
+        Produto.objects.filter(pk=self.produto.pk).update(stock_atual=5)  # the admin returned it then
+        self.expirar({"id": "cs_exp"})
+        self.assertEqual(self.estado(), ("cancelada", "falhado"))
+        self.assertEqual(self.stock(), 5)
+        self.post.assert_not_called()
+
+    def test_x4_event_for_replaced_session_is_ignored(self):
+        Pagamento.objects.filter(pk=self.pagamento.pk).update(stripe_session_id="cs_new")
+        with self.assertLogs("core.views", level="ERROR"):
+            self.expirar({"id": "cs_exp"})
+        self.assertEqual(self.estado(), ("pendente", "pendente"))
+        self.assertEqual(self.stock(), 4)
+
+    def test_x5_retry_after_expiry_cancellation_gets_no_session(self):
+        self.expirar({"id": "cs_exp"})
+        with patch.object(stripe.checkout.Session, "create") as create, \
+             patch.object(stripe.checkout.Session, "retrieve") as retrieve:
+            self.assertEqual(services.garantir_sessao_pagamento(self.encomenda), ("nao_ativa", None))
+        create.assert_not_called()
+        retrieve.assert_not_called()
+
+    def test_x6_missing_image_file_does_not_block_stock_return(self):
+        Produto.objects.filter(pk=self.produto.pk).update(imagem="produtos/em-falta.jpg")
+        self.expirar({"id": "cs_exp"})
+        self.assertEqual(self.stock(), 5)
+
+    def test_x7_paid_payment_is_left_alone(self):
+        Pagamento.objects.filter(pk=self.pagamento.pk).update(estado_pagamento="pago")
+        self.expirar({"id": "cs_exp"})
+        self.assertEqual(self.estado(), ("pendente", "pago"))
+        self.assertEqual(self.stock(), 4)
+
+    def test_x8_service_refuses_a_session_that_is_no_longer_stored(self):
+        self.assertFalse(services.cancelar_por_expiracao(self.pagamento.pk, "cs_other"))
+        self.assertEqual(self.estado(), ("pendente", "pendente"))
+        self.assertEqual(self.stock(), 4)

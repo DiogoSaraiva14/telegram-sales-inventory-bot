@@ -7,6 +7,8 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django.utils import timezone
 from .models import Pagamento, Encomenda, RegistoAuditoria
+from . import services
+from telegram_bot.constants import MENSAGENS_NOTIFICACAO
 
 logger = logging.getLogger(__name__)
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -79,19 +81,21 @@ def _handle_payment_success(session):
 
 
 def _notificar_pagamento_telegram(encomenda):
+    _enviar_telegram(encomenda, (
+        f"✅ *Pagamento confirmado!*\n\n"
+        f"📦 Encomenda #{encomenda.id}\n"
+        f"💶 Total: {encomenda.total:.2f}€\n\n"
+        f"O teu pagamento foi recebido. Estamos a preparar o teu pedido! 🙏"
+    ))
+
+
+def _enviar_telegram(encomenda, mensagem):
     token = settings.TELEGRAM_TOKEN
     if not token:
         logger.warning("TELEGRAM_TOKEN não configurado — notificação ignorada")
         return
 
     chat_id = encomenda.utilizador.telegram_id
-    mensagem = (
-        f"✅ *Pagamento confirmado!*\n\n"
-        f"📦 Encomenda #{encomenda.id}\n"
-        f"💶 Total: {encomenda.total:.2f}€\n\n"
-        f"O teu pagamento foi recebido. Estamos a preparar o teu pedido! 🙏"
-    )
-
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
         response = httpx.post(url, json={
@@ -123,13 +127,9 @@ def _handle_payment_expired(session):
     if pagamento.estado_pagamento != 'pendente':
         return
 
-    pagamento.estado_pagamento = 'falhado'
-    pagamento.save()
-
-    RegistoAuditoria.objects.create(
-        utilizador=pagamento.encomenda.utilizador,
-        acao='PAGAMENTO_EXPIRADO',
-        entidade='Pagamento',
-        descricao=f'Encomenda #{pagamento.encomenda.id} expirou sem pagamento'
-    )
-    logger.info("Pagamento expirado: encomenda_id=%s", pagamento.encomenda.id)
+    # SEC-04 (owner decision): an expired session cancels its unpaid order and returns the stock.
+    cancelada = services.cancelar_por_expiracao(pagamento.pk, session_id)
+    logger.info("Pagamento expirado: encomenda_id=%s cancelada=%s", pagamento.encomenda_id, cancelada)
+    if cancelada:  # the transaction has committed, so the customer is told only about a real cancellation
+        encomenda = pagamento.encomenda
+        _enviar_telegram(encomenda, MENSAGENS_NOTIFICACAO['cancelada'].format(id=encomenda.id, total=float(encomenda.total)))

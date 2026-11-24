@@ -55,7 +55,7 @@ Staff can also mutate products, stock, orders, payments, and audit data through 
    - `reservar_encomenda` creates the order, its line, the stock decrement, the stock movement and the audit row in one transaction, at most once per token.
    - Then `garantir_sessao_pagamento` creates the Stripe Checkout Session and saves the Pagamento row before the payment link is shown.
    - A repeat tap or retry finds the same order and recovers or replaces its session.
-4. Stripe completion marks payment paid and order confirmed. Expiration marks payment failed.
+4. Stripe completion marks payment paid and order confirmed. Expiration marks payment failed, cancels the unpaid order and returns its stock in one transaction, then notifies the customer.
 
 ### Admin
 
@@ -80,6 +80,6 @@ The current order flow creates quantity one and a one-line order. This is observ
 
 - Are the bot and Django server intended to run as separate processes in production?
 - Is stock reserved at order creation, payment-session creation, or successful payment?
-- What should happen to expired or abandoned unpaid orders?
+- What should happen to unpaid orders that never got a Stripe session? (Expired sessions cancel the order and return stock.)
 - Are product images expected to be uploaded through Django admin, or committed as sample fixtures?
 - Which parts of the GitLab project and history may be included in a public portfolio?
