@@ -3,12 +3,12 @@
 Status: started as a static review of the imported source snapshot. Since then, automated tests have been added for the fixed findings (SEC-02, SEC-03, SEC-13). They run on PostgreSQL with Telegram and Stripe mocked; see README.md. No runtime exploit checks, dependency audit, or deployment review have been run. Priorities below are engineering urgency, not CVSS scores or claims of demonstrated exploitation.
 
 **Finding status (2026-11-24):**
-- **Fixed:** SEC-01, SEC-02 (bot checkout), SEC-04 (expired sessions), SEC-05, SEC-06, SEC-07, SEC-12 and SEC-13.
+- **Fixed:** SEC-01, SEC-02 (bot checkout), SEC-04 (expired sessions), SEC-05, SEC-06, SEC-07, SEC-09, SEC-12 and SEC-13.
 - **Mostly fixed:**
   - SEC-03: orders that never got a Stripe session hold stock until an admin cancels them.
   - SEC-08: log retention and access are not defined yet.
 - **Partly addressed:** SEC-11. Checkout no longer re-saves products, but other saves still re-encode images.
-- **Open:** SEC-09 and SEC-10.
+- **Open:** SEC-10.
 
 ## Trust boundaries
 
@@ -135,6 +135,14 @@ security/decorators.py lines 65–72 logs Telegram user IDs and usernames. teleg
 ### SEC-09 — Rate limiting and session state are process-local (Medium priority)
 
 security/decorators.py lines 13–43 and telegram_bot/guards.py store rate and session state in module-level dictionaries. Limits reset on restart and are independent across processes; inactive keys are not periodically evicted. Document single-process assumptions or use bounded shared state if deployment scales out.
+
+**Status: fixed for the polling bot (2026-11-24).**
+- **Single process by design:** the bot uses long polling, and Telegram refuses a second `getUpdates` consumer for the same token. So the bot always runs as exactly one process, and the in-memory state is not split across processes. This is now stated next to both dictionaries.
+- **Bounded memory:** both dictionaries drop idle users at most once a minute.
+  - The rate limiter drops users with no request inside its 10-second window.
+  - The session store drops sessions older than 30 minutes. They already counted as expired, so behavior does not change.
+- **Unchanged:** a restart still resets both. Rate limits start fresh, and every user's first button press after a restart gets "Sessão expirada" until they send /start.
+- **Would need shared state:** switching the bot to webhook mode with several workers would need shared storage (for example the database), which is not implemented.
 
 ### SEC-10 — Admin order editing can bypass domain invariants (Medium priority)
 

@@ -63,7 +63,7 @@ Telegram admin callbacks check the configured ADMIN_TELEGRAM_IDS set in each rou
 
 ## State and persistence
 
-PostgreSQL stores users, product data, orders and lines, payments, stock movements, and audit records. Session activity and rate-limit buckets are kept in process memory. Product images use Django ImageField and local MEDIA_ROOT by default.
+PostgreSQL stores users, product data, orders and lines, payments, stock movements, and audit records. Session activity and rate-limit buckets are kept in process memory, bounded by a periodic cleanup. This works because the polling bot always runs as a single process (SEC-09). A restart resets them. Product images use Django ImageField and local MEDIA_ROOT by default.
 
 The current order flow creates quantity one and a one-line order. This is observed behavior, not a confirmed long-term product requirement.
 
