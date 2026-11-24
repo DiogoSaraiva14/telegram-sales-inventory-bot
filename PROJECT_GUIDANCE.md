@@ -4,7 +4,9 @@ Status: imported baseline under overhaul. Done so far:
 - a behavior-preserving split of bot.py;
 - answering each Telegram callback query once;
 - the product-photo fallback (both committed);
-- duplicate-safe checkout with recoverable Stripe sessions (on branch `codex/checkout-change-2`).
+- duplicate-safe checkout with recoverable Stripe sessions.
+
+All four are merged into `main`.
 
 The business rules decided for checkout are recorded below. LocalReach remains the user's main development priority; this Telegram project is being reviewed as a bounded portfolio candidate.
 

@@ -2,6 +2,12 @@
 
 Status: started as a static review of the imported source snapshot. Since then, automated tests have been added for the fixed findings (SEC-02, SEC-03, SEC-13). They run on PostgreSQL with Telegram and Stripe mocked; see README.md. No runtime exploit checks, dependency audit, or deployment review have been run. Priorities below are engineering urgency, not CVSS scores or claims of demonstrated exploitation.
 
+**Finding status (2026-11-24):**
+- **Fixed:** SEC-02 (bot checkout) and SEC-13.
+- **Mostly fixed:** SEC-03. What remains is deferred to SEC-06.
+- **Partly addressed:** SEC-11. Checkout no longer re-saves products, but other saves still re-encode images.
+- **Open:** SEC-01, SEC-04, SEC-05, SEC-06, SEC-07, SEC-08, SEC-09, SEC-10 and SEC-12.
+
 ## Trust boundaries
 
 - Telegram users submit commands, callback values, names, and interaction timing.

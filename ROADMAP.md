@@ -2,6 +2,22 @@
 
 Status: draft sequencing from a static code review. Keep the work bounded; do not implement multiple phases at once.
 
+## Progress (2026-11-24)
+
+| Item | Phase | State |
+| --- | --- | --- |
+| Split bot.py into routing, keyboards/presentation and services | 3 | Done |
+| Answer each Telegram callback once | — | Done |
+| Product screen survives a missing or failed photo | 4 (partly) | Done |
+| Transactional order creation with a product row lock (no oversell) | 2 | Done for bot checkout; admin paths still open |
+| One order per Confirm screen, recoverable Stripe sessions | 2 | Done (SEC-13, SEC-03) |
+| Tests for callback routing, admin gate, checkout | 1 | Done: mock tests plus PostgreSQL tests (`manage.py test core telegram_bot`) |
+| Fix the order-detail callback mismatch (SEC-12) | 1 | Open; kept visible as an expected test failure |
+| `.env.example`, environment validation, setup guide | 1 | Open |
+| CI | 1 | Open |
+| Expiry stock release (SEC-04), webhook idempotency (SEC-05), cancellation and refunds (SEC-06) | 2 | Open; SEC-06 includes the accepted checkout cancellation window |
+| Safe settings defaults (SEC-01) | 4 | Open |
+
 ## Phase 0 — Confirm scope and ownership
 
 - Decide whether this project remains a portfolio prototype or targets a deployable demo.
@@ -36,7 +52,7 @@ Status: draft sequencing from a static code review. Keep the work bounded; do no
 
 ## Phase 3 — Refactor for maintainability
 
-- Split bot.py into routing, keyboards/presentation, and domain services. (Structural split done: telegram_bot/ and core/services.py. Services are still non-transactional.)
+- Split bot.py into routing, keyboards/presentation, and domain services. (Done: telegram_bot/ and core/services.py. Bot checkout is transactional; the admin helpers are not yet.)
 - Replace duplicated Telegram/Django admin business logic with shared operations.
 - Give state-changing operations explicit inputs/outputs and audit behavior.
 - Bound and externalize rate/session state if multi-process deployment is selected.
