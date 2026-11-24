@@ -1202,3 +1202,60 @@ class ImagemProdutoTests(TestCase):
         produto.save()
         self.assertTrue(produto.imagem.name.startswith("produtos/nova"))
         self.assertTrue(produto.imagem.name.endswith(".jpg"))
+
+
+# ── Abandoned orders without a payment session are released (SEC-03) ──────
+
+@override_settings(TELEGRAM_TOKEN="test-token", **URLS_A)
+class EncomendasAbandonadasTests(TestCase):
+
+    def setUp(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        self.produto = criar_produto(stock=5)
+        self.encomendas = {}
+        for nome, horas, telegram_id in (("velha", 25, 7030), ("recente", 23, 7031), ("velha_paga", 30, 7032)):
+            _, encomenda = services.reservar_encomenda(utilizador_telegram(telegram_id), self.produto.id, nova_chave())
+            Encomenda.objects.filter(pk=encomenda.pk).update(data_encomenda=timezone.now() - timedelta(hours=horas))
+            self.encomendas[nome] = encomenda
+        Pagamento.objects.create(encomenda=self.encomendas["velha_paga"], metodo="stripe",
+                                 valor=Decimal("10.00"), estado_pagamento="pendente", stripe_session_id="cs_v")
+        envio = patch("core.views.httpx.post", return_value=MagicMock(status_code=200))
+        self.post = envio.start()
+        self.addCleanup(envio.stop)
+
+    def estado(self, nome):
+        return Encomenda.objects.get(pk=self.encomendas[nome].pk).estado
+
+    def test_sweep_cancels_only_old_orders_without_a_payment(self):
+        from io import StringIO
+        from django.core.management import call_command
+        saida = StringIO()
+        with patch.object(stripe.checkout.Session, "retrieve") as retrieve:
+            call_command("cancelar_encomendas_abandonadas", stdout=saida)
+        retrieve.assert_not_called()
+        self.assertEqual((self.estado("velha"), self.estado("recente"), self.estado("velha_paga")),
+                         ("cancelada", "pendente", "pendente"))
+        self.assertEqual(Produto.objects.get(pk=self.produto.pk).stock_atual, 3)  # 5 - 3 + 1
+        self.assertIn("sem pagamento há mais de 24 h", RegistoAuditoria.objects.get(acao="CANCELAR_ENCOMENDA").descricao)
+        self.post.assert_called_once()
+        self.assertEqual(self.post.call_args.kwargs["json"]["chat_id"], "7030")
+        self.assertIn("1 encomenda(s)", saida.getvalue())
+
+    def test_second_run_changes_nothing(self):
+        from django.core.management import call_command
+        call_command("cancelar_encomendas_abandonadas", stdout=MagicMock())
+        call_command("cancelar_encomendas_abandonadas", stdout=MagicMock())
+        self.post.assert_called_once()
+        self.assertEqual(MovimentoStock.objects.filter(tipo_movimento="entrada").count(), 1)
+
+    def test_order_that_got_a_session_meanwhile_is_kept(self):
+        Pagamento.objects.create(encomenda=self.encomendas["velha"], metodo="stripe",
+                                 valor=Decimal("10.00"), estado_pagamento="pendente", stripe_session_id="cs_novo")
+        self.assertIsNone(services.cancelar_se_abandonada(self.encomendas["velha"].id))
+        self.assertEqual(self.estado("velha"), "pendente")
+
+    def test_threshold_is_configurable(self):
+        from django.core.management import call_command
+        call_command("cancelar_encomendas_abandonadas", "--horas", "1", stdout=MagicMock())
+        self.assertEqual((self.estado("velha"), self.estado("recente")), ("cancelada", "cancelada"))
