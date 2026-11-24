@@ -41,6 +41,11 @@ The strongest potential portfolio story is an end-to-end order and inventory wor
   - A payment that arrives for a cancelled order is refunded in full, and the order stays cancelled.
   - The Django admin bulk cancel runs the same operation as the Telegram admin, including the customer message.
   - The project is still an unvalidated portfolio project, not production-ready: nothing has run against live Stripe.
+- **Admin changes (SEC-10, owner decisions, 2026-11-24):**
+  - Orders, lines and payments are read-only in the Django admin, except an order's notes.
+  - Only the Stripe webhook confirms orders; there is no manual confirm.
+  - Admins move orders forward only: confirmada → enviada → entregue.
+  - A stock edit in the Django admin is applied as a difference and recorded as a stock movement.
 
 ## Business rules to confirm before redesign
 

@@ -45,7 +45,6 @@ ALLOWED_PREFIXES = (
     "admin_stock_produto_",
     "admin_stock_adj_",
     "admin_ver_encomenda_",
-    "admin_enc_confirmar_",
     "admin_enc_enviada_",
     "admin_enc_entregue_",
     "admin_enc_cancelar_",

@@ -59,7 +59,7 @@ Staff can also mutate products, stock, orders, payments, and audit data through 
 
 ### Admin
 
-Telegram admin callbacks check the configured ADMIN_TELEGRAM_IDS set in each route branch. Django admin uses the standard Django staff authentication system. Cancellation is one shared operation (`cancelar_encomenda`); other order status and stock changes still differ between the two surfaces (SEC-10).
+Telegram admin callbacks check the configured ADMIN_TELEGRAM_IDS set in each route branch. Django admin uses the standard Django staff authentication system. Both surfaces use the same operations in core/services.py: `cancelar_encomenda`, `avancar_estado_encomenda` (forward only) and `ajustar_stock`. In Django admin, orders, lines and payments are read-only (SEC-10).
 
 ## State and persistence
 
@@ -69,7 +69,7 @@ The current order flow creates quantity one and a one-line order. This is observ
 
 ## Architecture review notes
 
-- Bot checkout and admin cancellation are transactional in core/services.py. Other admin order and stock changes are not yet: that layer should own them too (SEC-10).
+- Bot checkout and admin order and stock changes are transactional in core/services.py (SEC-06, SEC-10).
 - Make order creation, stock reservation, payment-session persistence, and cancellation atomic or explicitly compensating.
 - Represent payment and order state transitions in one place; both admin interfaces should call the same operations.
 - Webhook state changes are idempotent under row locks (SEC-05); notification delivery still has no retry.

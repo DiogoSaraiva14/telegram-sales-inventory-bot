@@ -4,7 +4,7 @@ from django.utils.safestring import mark_safe
 from django.contrib import messages
 import stripe
 from . import services
-from .views import notificar_cancelamento
+from .views import notificar_estado
 from .models import (
     Utilizador, Produto, Encomenda,
     LinhaEncomenda, Pagamento, MovimentoStock, RegistoAuditoria
@@ -64,17 +64,45 @@ class ProdutoAdmin(admin.ModelAdmin):
         atualizados = queryset.update(ativo=True)
         self.message_user(request, f"{atualizados} produto(s) ativado(s).", messages.SUCCESS)
 
+    def save_model(self, request, obj, form, change):
+        """Stock edits become an atomic adjustment with a movement and an audit row (SEC-10)."""
+        if not (change and 'stock_atual' in form.changed_data):
+            return super().save_model(request, obj, form, change)
+        delta = obj.stock_atual - form.initial['stock_atual']
+        outros = [f for f in form.changed_data if f != 'stock_atual']
+        if outros:  # never write stock_atual with the form's possibly stale value
+            obj.save(update_fields=outros)
+        obj.stock_atual = services.ajustar_stock(
+            obj.pk, delta, f"Ajuste manual via Django admin (delta={delta})")
+        RegistoAuditoria.objects.create(
+            acao='AJUSTE_STOCK', entidade='Produto',
+            descricao=f'{obj.nome}: delta={delta}, novo stock={obj.stock_atual} (Django admin: {request.user})',
+        )
+
     @admin.action(description='❌ Desativar produtos selecionados')
     def desativar_produtos(self, request, queryset):
         atualizados = queryset.update(ativo=False)
         self.message_user(request, f"{atualizados} produto(s) desativado(s).", messages.WARNING)
 
 
-class LinhaEncomendaInline(admin.TabularInline):
+class SoLeitura:
+    """View-only in Django admin (SEC-10): orders change only through domain operations."""
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class LinhaEncomendaInline(SoLeitura, admin.TabularInline):
     model = LinhaEncomenda
     extra = 0
-    readonly_fields = ['subtotal']
-    fields = ['produto', 'quantidade', 'preco_unitario', 'subtotal']
+    fields = ['produto', 'nome_produto', 'quantidade', 'preco_unitario', 'subtotal']
+    readonly_fields = fields
 
 
 @admin.register(Encomenda)
@@ -82,9 +110,17 @@ class EncomendaAdmin(admin.ModelAdmin):
     list_display = ['id', 'utilizador', 'data_encomenda', 'data_atualizacao', 'estado_badge', 'total']
     list_filter = ['estado']
     search_fields = ['utilizador__nome', 'utilizador__telegram_id']
-    readonly_fields = ['data_encomenda', 'data_atualizacao', 'total']
+    # Only the internal notes are editable; state changes go through the actions below (SEC-10).
+    fields = ['utilizador', 'estado', 'total', 'data_encomenda', 'data_atualizacao', 'notas']
+    readonly_fields = ['utilizador', 'estado', 'total', 'data_encomenda', 'data_atualizacao']
     inlines = [LinhaEncomendaInline]
-    actions = ['marcar_confirmada', 'marcar_enviada', 'marcar_entregue', 'marcar_cancelada']
+    actions = ['marcar_enviada', 'marcar_entregue', 'marcar_cancelada']
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
     @admin.display(description='Estado', ordering='estado')
     def estado_badge(self, obj):
@@ -95,20 +131,29 @@ class EncomendaAdmin(admin.ModelAdmin):
         cor, emoji = cores.get(obj.estado, ('gray', '❓'))
         return format_html('<span style="color:{}">{} {}</span>', cor, emoji, obj.get_estado_display())
 
-    @admin.action(description='✅ Marcar como Confirmada')
-    def marcar_confirmada(self, request, queryset):
-        atualizados = queryset.update(estado='confirmada')
-        self.message_user(request, f"{atualizados} encomenda(s) confirmada(s).", messages.SUCCESS)
+    def _avancar(self, request, queryset, novo_estado, rotulo):
+        """SEC-10: the same forward step as the Telegram admin, with audit and customer message."""
+        feitas, recusadas = 0, []
+        for encomenda_id in queryset.values_list('id', flat=True):
+            encomenda = services.avancar_estado_encomenda(encomenda_id, novo_estado, f'Django admin: {request.user}')
+            if encomenda is None:
+                recusadas.append(f"#{encomenda_id}")
+                continue
+            notificar_estado(encomenda, novo_estado)
+            feitas += 1
+        self.message_user(request, f"{feitas} encomenda(s) marcada(s) como {rotulo}.", messages.SUCCESS)
+        if recusadas:
+            anterior = services.ESTADO_ANTERIOR[novo_estado]
+            self.message_user(request, f"Não alteradas (só a partir de '{anterior}'): " + ", ".join(recusadas),
+                              messages.ERROR)
 
     @admin.action(description='🚚 Marcar como Enviada')
     def marcar_enviada(self, request, queryset):
-        atualizados = queryset.update(estado='enviada')
-        self.message_user(request, f"{atualizados} encomenda(s) marcada(s) como enviada.", messages.SUCCESS)
+        self._avancar(request, queryset, 'enviada', 'enviada')
 
     @admin.action(description='📬 Marcar como Entregue')
     def marcar_entregue(self, request, queryset):
-        atualizados = queryset.update(estado='entregue')
-        self.message_user(request, f"{atualizados} encomenda(s) marcada(s) como entregue.", messages.SUCCESS)
+        self._avancar(request, queryset, 'entregue', 'entregue')
 
     @admin.action(description='❌ Marcar como Cancelada')
     def marcar_cancelada(self, request, queryset):
@@ -126,7 +171,7 @@ class EncomendaAdmin(admin.ModelAdmin):
             if resultado == 'invalida':
                 falhas.append(f"#{encomenda_id} (estado não permite cancelar)")
                 continue
-            notificar_cancelamento(encomenda, resultado)
+            notificar_estado(encomenda, resultado)
             canceladas += 1
         self.message_user(request, f"{canceladas} encomenda(s) cancelada(s).", messages.WARNING)
         if falhas:
@@ -134,14 +179,14 @@ class EncomendaAdmin(admin.ModelAdmin):
 
 
 @admin.register(LinhaEncomenda)
-class LinhaEncomendaAdmin(admin.ModelAdmin):
+class LinhaEncomendaAdmin(SoLeitura, admin.ModelAdmin):
     list_display = ['encomenda', 'produto', 'quantidade', 'preco_unitario', 'subtotal']
     readonly_fields = ['subtotal']
     search_fields = ['produto__nome', 'encomenda__id']
 
 
 @admin.register(Pagamento)
-class PagamentoAdmin(admin.ModelAdmin):
+class PagamentoAdmin(SoLeitura, admin.ModelAdmin):
     list_display = ['id', 'encomenda', 'metodo', 'valor', 'estado_pagamento_badge', 'data_pagamento', 'stripe_session_id']
     list_filter = ['metodo', 'estado_pagamento']
     search_fields = ['encomenda__id', 'stripe_session_id', 'referencia_externa']

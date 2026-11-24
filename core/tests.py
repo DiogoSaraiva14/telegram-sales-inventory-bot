@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import stripe
-from asgiref.sync import sync_to_async
+from asgiref.sync import async_to_sync, sync_to_async
 from django.db import DatabaseError, IntegrityError, connection, transaction
 from django.db.models.query import QuerySet
 from django.forms.models import model_to_dict
@@ -1046,3 +1046,108 @@ class ConcurrentCancellationTests(TransactionTestCase):
         self.assertEqual(Pagamento.objects.get(encomenda=encomenda).estado_pagamento, "reembolsado")
         self.assertEqual(Produto.objects.get(pk=produto.pk).stock_atual, 5)
         self.assertIn("reembolsado", post.call_args.kwargs["json"]["text"])
+
+
+# ── Admin changes go through domain operations (SEC-10) ────────────────────
+
+@override_settings(TELEGRAM_TOKEN="test-token", **URLS_A)
+class AdminInvariantTests(TestCase):
+
+    def setUp(self):
+        from django.contrib import admin as django_admin
+        from core.admin import EncomendaAdmin, PagamentoAdmin, LinhaEncomendaAdmin, ProdutoAdmin
+        self.site = django_admin.site
+        self.EncomendaAdmin, self.PagamentoAdmin = EncomendaAdmin, PagamentoAdmin
+        self.LinhaEncomendaAdmin, self.ProdutoAdmin = LinhaEncomendaAdmin, ProdutoAdmin
+        self.produto = criar_produto(stock=5)
+        _, self.encomenda = services.reservar_encomenda(utilizador_telegram(7020), self.produto.id, nova_chave())
+        envio = patch("core.views.httpx.post", return_value=MagicMock(status_code=200))
+        self.post = envio.start()
+        self.addCleanup(envio.stop)
+
+    def estado(self, encomenda=None):
+        return Encomenda.objects.get(pk=(encomenda or self.encomenda).pk).estado
+
+    def stock(self):
+        return Produto.objects.get(pk=self.produto.pk).stock_atual
+
+    def test_a1_status_only_moves_forward_one_step(self):
+        self.assertIsNone(services.avancar_estado_encomenda(self.encomenda.id, "enviada"))  # still pendente
+        self.assertIsNone(services.avancar_estado_encomenda(self.encomenda.id, "confirmada"))  # webhook only
+        Encomenda.objects.filter(pk=self.encomenda.pk).update(estado="confirmada")
+        self.assertIsNone(services.avancar_estado_encomenda(self.encomenda.id, "entregue"))  # no skipping
+        self.assertIsNotNone(services.avancar_estado_encomenda(self.encomenda.id, "enviada", "teste"))
+        self.assertIsNotNone(services.avancar_estado_encomenda(self.encomenda.id, "entregue"))
+        self.assertEqual(self.estado(), "entregue")
+        self.assertIsNone(services.avancar_estado_encomenda(self.encomenda.id, "enviada"))  # no going back
+        self.assertEqual(list(RegistoAuditoria.objects.filter(entidade="Encomenda", acao__startswith="ENCOMENDA_")
+                              .order_by("id").values_list("acao", flat=True)),
+                         ["ENCOMENDA_ENVIADA", "ENCOMENDA_ENTREGUE"])
+        self.assertIn("(teste)", RegistoAuditoria.objects.get(acao="ENCOMENDA_ENVIADA").descricao)
+
+    def test_a2_cancelled_order_cannot_be_reopened(self):
+        Encomenda.objects.filter(pk=self.encomenda.pk).update(estado="cancelada")
+        for estado in ("enviada", "entregue", "confirmada", "pendente"):
+            self.assertIsNone(services.avancar_estado_encomenda(self.encomenda.id, estado))
+        self.assertEqual(self.estado(), "cancelada")
+
+    def test_a3_django_ship_action_uses_the_step_and_notifies(self):
+        _, confirmada = services.reservar_encomenda(utilizador_telegram(7021), self.produto.id, nova_chave())
+        Encomenda.objects.filter(pk=confirmada.pk).update(estado="confirmada")
+        modelo = self.EncomendaAdmin(Encomenda, self.site)
+        self.assertNotIn("marcar_confirmada", modelo.actions)
+        with patch.object(modelo, "message_user") as message_user:
+            modelo.marcar_enviada(SimpleNamespace(user="admin"),
+                                  Encomenda.objects.filter(pk__in=[self.encomenda.pk, confirmada.pk]))
+        self.assertEqual(self.estado(confirmada), "enviada")
+        self.assertEqual(self.estado(), "pendente")
+        self.post.assert_called_once()
+        self.assertIn("enviada", self.post.call_args.kwargs["json"]["text"].lower())
+        textos = [c.args[1] for c in message_user.call_args_list]
+        self.assertIn("1 encomenda(s) marcada(s) como enviada.", textos)
+        self.assertTrue(any(f"#{self.encomenda.pk}" in t for t in textos))
+
+    def test_a4_orders_lines_and_payments_are_read_only(self):
+        pedido = SimpleNamespace()
+        encomendas = self.EncomendaAdmin(Encomenda, self.site)
+        self.assertFalse(encomendas.has_add_permission(pedido))
+        self.assertFalse(encomendas.has_delete_permission(pedido, self.encomenda))
+        formulario = encomendas.get_form(pedido, self.encomenda, change=True)
+        self.assertEqual(list(formulario.base_fields), ["notas"])
+        inline = encomendas.inlines[0](Encomenda, self.site)
+        self.assertFalse(inline.has_change_permission(pedido, self.encomenda))
+        self.assertFalse(inline.has_add_permission(pedido, self.encomenda))
+        for classe, modelo in ((self.PagamentoAdmin, Pagamento), (self.LinhaEncomendaAdmin, LinhaEncomenda)):
+            admin_modelo = classe(modelo, self.site)
+            self.assertFalse(admin_modelo.has_add_permission(pedido))
+            self.assertFalse(admin_modelo.has_change_permission(pedido))
+            self.assertFalse(admin_modelo.has_delete_permission(pedido))
+
+    def test_a5_stock_adjustment_is_relative_clamped_and_recorded(self):
+        self.assertEqual(services.ajustar_stock(self.produto.id, 3, "teste"), 7)
+        self.assertEqual(services.ajustar_stock(self.produto.id, -10, "teste"), 0)
+        self.assertEqual(services.ajustar_stock(self.produto.id, -1, "teste"), 0)  # nothing to remove
+        movimentos = list(MovimentoStock.objects.filter(observacoes="teste").order_by("id")
+                          .values_list("tipo_movimento", "quantidade"))
+        self.assertEqual(movimentos, [("entrada", 3), ("saida", 7)])
+
+    def test_a6_django_stock_edit_keeps_a_concurrent_checkout(self):
+        produto = Produto.objects.get(pk=self.produto.pk)  # the admin opens the form at stock 4
+        Produto.objects.filter(pk=produto.pk).update(stock_atual=3)  # a checkout lands meanwhile
+        produto.stock_atual, produto.nome = 6, "Novo nome"  # the admin types 6 (+2) and renames
+        formulario = SimpleNamespace(changed_data=["nome", "stock_atual"], initial={"stock_atual": 4})
+        self.ProdutoAdmin(Produto, self.site).save_model(SimpleNamespace(user="admin"), produto, formulario, True)
+        atual = Produto.objects.get(pk=produto.pk)
+        self.assertEqual((atual.stock_atual, atual.nome), (5, "Novo nome"))
+        self.assertTrue(MovimentoStock.objects.filter(tipo_movimento="entrada", quantidade=2).exists())
+        self.assertIn("delta=2, novo stock=5 (Django admin: admin)",
+                      RegistoAuditoria.objects.get(acao="AJUSTE_STOCK").descricao)
+
+    def test_a7_telegram_toggle_and_stock_buttons_keep_a_concurrent_checkout(self):
+        produto = Produto.objects.get(pk=self.produto.pk)  # stock 4 in memory
+        Produto.objects.filter(pk=produto.pk).update(stock_atual=2)
+        async_to_sync(services.alternar_produto_ativo)(produto)
+        self.assertEqual(Produto.objects.get(pk=produto.pk).stock_atual, 2)
+        async_to_sync(services.ajustar_stock_manual)(produto, 1)
+        self.assertEqual(produto.stock_atual, 3)
+        self.assertEqual(Produto.objects.get(pk=produto.pk).stock_atual, 3)
