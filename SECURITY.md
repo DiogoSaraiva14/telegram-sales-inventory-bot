@@ -3,10 +3,10 @@
 Status: started as a static review of the imported source snapshot. Since then, automated tests have been added for the fixed findings (SEC-02, SEC-03, SEC-13). They run on PostgreSQL with Telegram and Stripe mocked; see README.md. No runtime exploit checks, dependency audit, or deployment review have been run. Priorities below are engineering urgency, not CVSS scores or claims of demonstrated exploitation.
 
 **Finding status (2026-11-24):**
-- **Fixed:** SEC-01, SEC-02 (bot checkout), SEC-04 (expired sessions), SEC-12 and SEC-13.
+- **Fixed:** SEC-01, SEC-02 (bot checkout), SEC-04 (expired sessions), SEC-05, SEC-12 and SEC-13.
 - **Mostly fixed:** SEC-03. What remains is deferred to SEC-06.
 - **Partly addressed:** SEC-11. Checkout no longer re-saves products, but other saves still re-encode images.
-- **Open:** SEC-05, SEC-06, SEC-07, SEC-08, SEC-09 and SEC-10.
+- **Open:** SEC-06, SEC-07, SEC-08, SEC-09 and SEC-10.
 
 ## Trust boundaries
 
@@ -80,6 +80,12 @@ Product detail (telegram_bot/handlers/customer.py `produto_detalhe`) is fixed: i
 ### SEC-05 — Webhook idempotency is not atomic (High priority)
 
 core/views.py lines 45–79 checks payment state, then performs separate payment, order, audit, and notification effects. Concurrent duplicate Stripe deliveries can pass the state check before either update commits. Persist provider event IDs or use a row-locked transaction and an outbox/retry mechanism for notifications.
+
+**Status: fixed (2026-11-24).**
+- `checkout.session.completed` now runs `core/services.py` `confirmar_pagamento`: one transaction that locks the order row and then the payment row (the same order as the expiry and checkout code), re-checks the stored session id and payment state, and only then writes the payment, order and audit rows.
+- A concurrent duplicate delivery waits for the lock, then sees `pago` and changes nothing. The Telegram message is sent after the commit, only by the delivery that confirmed the payment, so the customer gets at most one.
+- `checkout.session.expired` uses the same pattern (SEC-04).
+- **Not done:** no event-id table and no notification outbox. A failed Telegram send is logged and not retried, as before. How payments for cancelled orders are treated is SEC-06.
 
 ### SEC-06 — Cancellation behavior diverges across admin surfaces (High priority)
 

@@ -745,3 +745,105 @@ class ExpiracaoPagamentoTests(TestCase):
         self.assertFalse(services.cancelar_por_expiracao(self.pagamento.pk, "cs_other"))
         self.assertEqual(self.estado(), ("pendente", "pendente"))
         self.assertEqual(self.stock(), 4)
+
+
+# ── Webhook payment confirmation is atomic and idempotent (SEC-05) ─────────
+
+@override_settings(TELEGRAM_TOKEN="test-token", **URLS_A)
+class ConfirmacaoPagamentoTests(TestCase):
+
+    def setUp(self):
+        from core.views import _handle_payment_success
+        self.confirmar = _handle_payment_success
+        _, self.encomenda = services.reservar_encomenda(utilizador_telegram(7008), criar_produto(stock=5).id, nova_chave())
+        self.pagamento = Pagamento.objects.create(
+            encomenda=self.encomenda, metodo="stripe", valor=self.encomenda.total,
+            estado_pagamento="pendente", stripe_session_id="cs_ok")
+        envio = patch("core.views.httpx.post", return_value=MagicMock(status_code=200))
+        self.post = envio.start()
+        self.addCleanup(envio.stop)
+
+    def estado(self):
+        return (Encomenda.objects.get(pk=self.encomenda.pk).estado,
+                Pagamento.objects.get(pk=self.pagamento.pk).estado_pagamento)
+
+    def confirmacoes(self):
+        return RegistoAuditoria.objects.filter(acao="PAGAMENTO_CONFIRMADO").count()
+
+    def test_w1_completed_session_confirms_order_and_notifies_once(self):
+        self.confirmar({"id": "cs_ok"})
+        self.assertEqual(self.estado(), ("confirmada", "pago"))
+        self.assertIsNotNone(Pagamento.objects.get(pk=self.pagamento.pk).data_pagamento)
+        self.assertEqual(self.confirmacoes(), 1)
+        self.post.assert_called_once()
+        self.assertIn("Pagamento confirmado", self.post.call_args.kwargs["json"]["text"])
+
+    def test_w2_duplicate_delivery_changes_nothing_and_sends_nothing(self):
+        self.confirmar({"id": "cs_ok"})
+        self.confirmar({"id": "cs_ok"})
+        self.assertEqual(self.confirmacoes(), 1)
+        self.post.assert_called_once()
+
+    def test_w3_service_refuses_a_session_that_is_no_longer_stored(self):
+        self.assertFalse(services.confirmar_pagamento(self.pagamento.pk, "cs_other"))
+        self.assertEqual(self.estado(), ("pendente", "pendente"))
+        self.assertEqual(self.confirmacoes(), 0)
+
+    def test_w4_failed_payment_is_still_confirmed_by_a_completed_session(self):
+        Pagamento.objects.filter(pk=self.pagamento.pk).update(estado_pagamento="falhado")
+        self.confirmar({"id": "cs_ok"})
+        self.assertEqual(self.estado(), ("confirmada", "pago"))
+
+
+@override_settings(TELEGRAM_TOKEN="test-token", **URLS_A)
+class ConcurrentWebhookTests(TransactionTestCase):
+
+    esperar_bloqueio = ConcurrentCheckoutTests.esperar_bloqueio
+
+    def test_t4_concurrent_duplicate_deliveries_confirm_once(self):
+        """Delivery A pauses holding the locks; delivery B must wait, then do nothing."""
+        from core.views import _handle_payment_success
+        Utilizador.objects.create(telegram_id="5005", nome="Cliente")
+        _, encomenda = services.reservar_encomenda(utilizador_telegram(5005, "Cliente"), criar_produto(stock=5).id, nova_chave())
+        Pagamento.objects.create(encomenda=encomenda, metodo="stripe", valor=encomenda.total,
+                                 estado_pagamento="pendente", stripe_session_id="cs_t4")
+        pids, erros = {}, []
+        a_tem_bloqueio, libertar_a = threading.Event(), threading.Event()
+        real = RegistoAuditoria.objects.create
+
+        def auditar(**kwargs):
+            if threading.current_thread().name == "A":
+                a_tem_bloqueio.set()  # A holds the order and payment locks, uncommitted
+                libertar_a.wait(10)
+            return real(**kwargs)
+
+        def entregar(nome):
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    pids[nome] = cursor.fetchone()[0]
+                _handle_payment_success({"id": "cs_t4"})
+            except Exception as exc:  # reported by the assertions below
+                erros.append(exc)
+            finally:
+                connection.close()
+
+        with patch("core.views.httpx.post", return_value=MagicMock(status_code=200)) as post, \
+             patch.object(RegistoAuditoria.objects, "create", side_effect=auditar):
+            a = threading.Thread(target=entregar, name="A", args=("A",))
+            b = threading.Thread(target=entregar, name="B", args=("B",))
+            a.start()
+            try:
+                self.assertTrue(a_tem_bloqueio.wait(5), "A não chegou ao bloqueio")
+                b.start()
+                self.assertTrue(self.esperar_bloqueio(pids, "B", "A"), "B nunca esperou por A")
+            finally:
+                libertar_a.set()
+                a.join(10)
+                if b.ident:
+                    b.join(10)
+        self.assertFalse(a.is_alive() or b.is_alive(), "uma thread não terminou")
+        self.assertEqual(erros, [])
+        self.assertEqual(RegistoAuditoria.objects.filter(acao="PAGAMENTO_CONFIRMADO").count(), 1)
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(Encomenda.objects.get(pk=encomenda.pk).estado, "confirmada")

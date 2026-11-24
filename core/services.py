@@ -11,6 +11,7 @@ from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import F
+from django.utils import timezone
 
 from core.models import (
     Utilizador, Produto, Encomenda, LinhaEncomenda,
@@ -333,6 +334,34 @@ def garantir_sessao_pagamento(encomenda):
 
 async def garantir_sessao_pagamento_async(encomenda):
     return await sync_to_async(garantir_sessao_pagamento)(encomenda)
+
+
+# ── Confirmação do pagamento (SEC-05) ─────────────────────────────────────
+
+def confirmar_pagamento(pagamento_id: int, sessao_id: str) -> bool:
+    """A Stripe Checkout Session completed: mark the payment paid and the order confirmed.
+
+    One transaction under the order row lock, then the payment row lock (the same order
+    as the other payment code), so concurrent duplicate deliveries run one after the
+    other and only the first changes anything. Returns True only for that first one.
+    """
+    with transaction.atomic():
+        encomenda_id = Pagamento.objects.values_list('encomenda_id', flat=True).get(pk=pagamento_id)
+        encomenda = Encomenda.objects.select_for_update().get(pk=encomenda_id)
+        pagamento = Pagamento.objects.select_for_update().get(pk=pagamento_id)
+        if pagamento.stripe_session_id != sessao_id or pagamento.estado_pagamento == 'pago':
+            return False  # duplicate delivery, or the session was replaced meanwhile
+        pagamento.estado_pagamento = 'pago'
+        pagamento.data_pagamento = timezone.now()
+        pagamento.save(update_fields=['estado_pagamento', 'data_pagamento'])
+        # Confirms whatever the order state, as before; payments for cancelled orders are SEC-06.
+        encomenda.estado = 'confirmada'
+        encomenda.save(update_fields=['estado', 'data_atualizacao'])
+        RegistoAuditoria.objects.create(
+            utilizador=encomenda.utilizador, acao='PAGAMENTO_CONFIRMADO', entidade='Pagamento',
+            descricao=f'Encomenda #{encomenda.id} paga via Stripe (session={sessao_id})',
+        )
+    return True
 
 
 # ── Expiração do pagamento (SEC-04) ────────────────────────────────────────
