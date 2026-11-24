@@ -3,10 +3,10 @@
 Status: started as a static review of the imported source snapshot. Since then, automated tests have been added for the fixed findings (SEC-02, SEC-03, SEC-13). They run on PostgreSQL with Telegram and Stripe mocked; see README.md. No runtime exploit checks, dependency audit, or deployment review have been run. Priorities below are engineering urgency, not CVSS scores or claims of demonstrated exploitation.
 
 **Finding status (2026-11-24):**
-- **Fixed:** SEC-01, SEC-02 (bot checkout), SEC-04 (expired sessions), SEC-05, SEC-06, SEC-12 and SEC-13.
+- **Fixed:** SEC-01, SEC-02 (bot checkout), SEC-04 (expired sessions), SEC-05, SEC-06, SEC-07, SEC-12 and SEC-13.
 - **Mostly fixed:** SEC-03. What remains: orders that never got a Stripe session hold stock until an admin cancels them.
 - **Partly addressed:** SEC-11. Checkout no longer re-saves products, but other saves still re-encode images.
-- **Open:** SEC-07, SEC-08, SEC-09 and SEC-10.
+- **Open:** SEC-08, SEC-09 and SEC-10.
 
 ## Trust boundaries
 
@@ -105,6 +105,14 @@ The Telegram admin flow permits cancelling pending or confirmed orders and resto
 ### SEC-07 — Markdown rendering uses dynamic values without escaping (Medium priority)
 
 The Telegram /start message formats the stored user name as Markdown (telegram_bot/handlers/commands.py `start`). sanitizar_nome_utilizador removes selected characters but does not escape Telegram Markdown metacharacters (security/sanitization.py lines 87–92). Product names/descriptions are also inserted into Markdown messages. Use context-specific escaping or avoid parse mode for dynamic content.
+
+**Status: fixed (2026-11-24).**
+- `telegram_bot/ui.py` `md()` escapes dynamic text for legacy Markdown, following the Bot API rules:
+  - outside an entity, it escapes `_`, `*`, `[` and the backtick with `python-telegram-bot`'s `escape_markdown(version=1)`;
+  - inside a `*bold*` or `_italic_` entity, where escaping is not allowed, it closes the entity, escapes the delimiter and reopens it, as in the Bot API's `*2*\**2=4*` example. Entities do not nest, so other characters are literal there.
+- It is applied to every user name, product name, description and category, and to audit fields, in Markdown messages: `/start`, product and confirmation screens, order details, payment screen, admin product, stock, order, user and audit screens.
+- Values that are not affected: ids, prices, stock counts, order states and fixed category labels.
+- **Not verified against live Telegram:** a value that starts or ends with the entity's delimiter leaves an empty `**` pair, which the documentation does not cover. Messages without parse mode, and button labels, need no escaping.
 
 ### SEC-08 — Personal identifiers are written to logs (Medium priority)
 

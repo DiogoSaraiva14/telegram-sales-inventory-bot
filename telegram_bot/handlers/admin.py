@@ -12,7 +12,7 @@ from core import services
 from security.sanitization import sanitizar_id, sanitizar_delta_stock, EntradaInvalida
 from telegram_bot.constants import ESTADO_EMOJI
 from telegram_bot.notifications import notificar_cliente
-from telegram_bot.ui import responder
+from telegram_bot.ui import md, responder
 from telegram_bot import keyboards as kb
 
 logger = logging.getLogger(__name__)
@@ -21,15 +21,15 @@ logger = logging.getLogger(__name__)
 def _texto_produto(p):
     estado = "✅ Ativo" if p.ativo else "❌ Inativo"
     return (
-        f"📦 *{p.nome}*\n\n"
+        f"📦 *{md(p.nome, '*')}*\n\n"
         f"💶 Preço: *{p.preco:.2f}€*\n"
         f"📦 Stock: *{p.stock_atual}* unidades\n"
-        f"📁 Categoria: {p.categoria}\n"
+        f"📁 Categoria: {md(p.categoria)}\n"
         f"Estado: {estado}"
     )
 
 def _texto_stock(p):
-    return f"📊 *Stock — {p.nome}*\n\nStock atual: *{p.stock_atual}* unidades\n\nAjusta o stock:"
+    return f"📊 *Stock — {md(p.nome, '*')}*\n\nStock atual: *{p.stock_atual}* unidades\n\nAjusta o stock:"
 
 
 # ── Menu ───────────────────────────────────────────────────────────────────
@@ -135,7 +135,7 @@ async def encomenda_detalhe(query, context, data, user_id):
     await responder(
         query, context,
         f"📋 *Encomenda #{encomenda.id}*\n\n"
-        f"👤 Cliente: *{encomenda.utilizador.nome}*\n"
+        f"👤 Cliente: *{md(encomenda.utilizador.nome, '*')}*\n"
         f"📱 Telegram ID: `{encomenda.utilizador.telegram_id}`\n"
         f"{emoji} Estado: *{encomenda.estado}*\n"
         f"💶 Total: *{encomenda.total:.2f}€*\n"
@@ -194,7 +194,7 @@ async def _mudar_estado_e_notificar(
     await responder(
         query, context,
         f"{emoji} *Encomenda #{encomenda.id}* marcada como *{novo_estado}*."
-        f"\n👤 Cliente: {encomenda.utilizador.nome}"
+        f"\n👤 Cliente: {md(encomenda.utilizador.nome)}"
         f"\n💶 Total: {encomenda.total:.2f}€"
         f"\n📩 Notificação enviada: {'✅ sim' if notificada else '❌ não'}"
         + extra,
@@ -238,7 +238,7 @@ async def utilizador_toggle(query, context, data, user_id):
     estado_label = "✅ desbloqueado" if novo_ativo else "🚫 bloqueado"
     await responder(
         query, context,
-        f"👤 *{u.nome}*\n\nO utilizador foi {estado_label}.",
+        f"👤 *{md(u.nome, '*')}*\n\nO utilizador foi {estado_label}.",
         kb.teclado_voltar_admin(), parse_mode=None
     )
 
@@ -251,7 +251,7 @@ async def auditoria(query, context, data, user_id):
         await responder(query, context, "📜 Sem registos de auditoria.", kb.teclado_voltar_admin())
         return
     linhas = [
-        f"🔹 `{r.data_hora.strftime('%d/%m %H:%M')}` — *{r.acao}* — {r.entidade}"
+        f"🔹 `{r.data_hora.strftime('%d/%m %H:%M')}` — *{md(r.acao, '*')}* — {md(r.entidade)}"
         for r in registos
     ]
     await responder(

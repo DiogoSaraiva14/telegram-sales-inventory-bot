@@ -15,7 +15,7 @@ from telegram_bot.constants import (
     CATEGORIAS, ESTADO_EMOJI, MENSAGEM_ECRA_EXPIRADO, MENSAGEM_FALHA_REGISTO,
     MENSAGEM_JA_REGISTADA, MENSAGEM_PAGAMENTO_A_CONFIRMAR,
 )
-from telegram_bot.ui import responder
+from telegram_bot.ui import md, responder
 from telegram_bot import keyboards as kb
 
 logger = logging.getLogger(__name__)
@@ -51,10 +51,10 @@ async def produto_detalhe(query, context, data, user_id):
         await responder(query, context, "❌ Produto não encontrado.",
                         kb.teclado_voltar_menu(), parse_mode=None)
         return
-    descricao = f"\n_{p.descricao}_" if p.descricao else ""
+    descricao = f"\n_{md(p.descricao, '_')}_" if p.descricao else ""
     stock_aviso = "\n⚠️ _Último em stock!_" if p.stock_atual == 1 else ""
     caption = (
-        f"📦 *{p.nome}*\n\n"
+        f"📦 *{md(p.nome, '*')}*\n\n"
         f"💶 Preço: *{p.preco:.2f}€*\n"
         f"📦 Stock: {p.stock_atual} unidades"
         f"{descricao}{stock_aviso}"
@@ -118,7 +118,7 @@ async def encomenda_detalhe(query, context, data, user_id):
     emoji = ESTADO_EMOJI.get(encomenda.estado, "📦")
     linhas_enc = await services.get_linhas_encomenda(encomenda)
     produtos_txt = "\n".join(
-        f"  • {l.produto.nome} x{l.quantidade} — {l.subtotal:.2f}€"
+        f"  • {md(l.produto.nome)} x{l.quantidade} — {l.subtotal:.2f}€"
         for l in linhas_enc
     )
     await responder(
@@ -145,7 +145,7 @@ async def encomendar(query, context, data, user_id):
     await responder(
         query, context,
         f"🛒 *Confirmar Encomenda*\n\n"
-        f"Produto: *{p.nome}*\n"
+        f"Produto: *{md(p.nome, '*')}*\n"
         f"Preço: *{p.preco:.2f}€*\n\n"
         f"Desejas confirmar esta encomenda?",
         kb.teclado_confirmar_encomenda(p, confirmacao.callback_confirmar(p.id, confirmacao.gerar_chave()))
@@ -185,7 +185,7 @@ async def _mostrar_pagamento(query, context, data, encomenda):
         await _mostrar(
             query, context,
             f"✅ *Encomenda #{encomenda.id} criada!*\n\n"
-            f"Produto: *{linhas[0].nome_produto}*\n"
+            f"Produto: *{md(linhas[0].nome_produto, '*')}*\n"
             f"Total: *{encomenda.total:.2f}€*\n\n"
             f"Clica no botão abaixo para completar o pagamento.\n"
             f"A encomenda é confirmada automaticamente após o pagamento. 💳",
