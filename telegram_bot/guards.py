@@ -11,6 +11,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from core.services import utilizador_bloqueado
+from security.sanitization import pseudonimo
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ def verificar_sessao(func):
             return await func(update, context)
         if update.callback_query:
             if _sessao_expirada(user_id):
-                logger.info("Sessão expirada: user_id=%s", user_id)
+                logger.info("Sessão expirada: utilizador=%s", pseudonimo(user_id))
                 await update.callback_query.answer(
                     "⏱️ A tua sessão expirou. Usa /start para recomeçar.",
                     show_alert=True
@@ -72,7 +73,7 @@ def verificar_bloqueio(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         if await utilizador_bloqueado(user_id):
-            logger.warning("Utilizador bloqueado tentou aceder: user_id=%s", user_id)
+            logger.warning("Utilizador bloqueado tentou aceder: utilizador=%s", pseudonimo(user_id))
             if update.message:
                 await update.message.reply_text(
                     "🚫 A tua conta foi suspensa.\n"

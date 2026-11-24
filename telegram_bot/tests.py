@@ -486,3 +486,51 @@ class MarkdownEscapingTests(SimpleTestCase):
              patch.object(customer, "responder", responder):
             await customer.encomendar(query, MagicMock(), "encomendar_3", 99)
         self.assertIn("Produto: *SSD *\\**Pro*\\***\n", responder.await_args.args[2])
+
+
+class LogPrivacyTests(SimpleTestCase):
+    """SEC-08: logs carry no raw Telegram ids, usernames or bot token."""
+
+    def test_pseudonym_is_stable_keyed_and_hides_the_id(self):
+        from django.test import override_settings
+        from security.sanitization import pseudonimo
+        rotulo = pseudonimo(123456789)
+        self.assertRegex(rotulo, r"^[0-9a-f]{12}$")
+        self.assertEqual(rotulo, pseudonimo("123456789"))
+        self.assertNotEqual(rotulo, pseudonimo(123456780))
+        with override_settings(SECRET_KEY="outra-chave"):
+            self.assertNotEqual(rotulo, pseudonimo(123456789))
+
+    async def test_action_log_has_pseudonym_not_id_or_username(self):
+        from security.decorators import log_acao
+        from security.sanitization import pseudonimo
+        update = MagicMock(effective_user=SimpleNamespace(id=123456789, username="ana_secreta"))
+        with self.assertLogs("security.decorators", level="INFO") as logs:
+            await log_acao("START")(AsyncMock())(update, MagicMock())
+        texto = "\n".join(logs.output)
+        self.assertIn(pseudonimo(123456789), texto)
+        self.assertNotIn("123456789", texto)
+        self.assertNotIn("ana_secreta", texto)
+
+    async def test_customer_notification_log_has_no_telegram_id(self):
+        from telegram_bot.notifications import notificar_cliente
+        context = MagicMock()
+        context.bot.send_message = AsyncMock()
+        encomenda = SimpleNamespace(id=7, total=Decimal("9.99"), utilizador=SimpleNamespace(telegram_id="5551234"))
+        with self.assertLogs("telegram_bot.notifications", level="INFO") as logs:
+            self.assertTrue(await notificar_cliente(context, encomenda, "enviada"))
+        self.assertNotIn("5551234", "\n".join(logs.output))
+
+    def test_webhook_notification_error_does_not_log_the_token_url(self):
+        from django.test import override_settings
+        from core import views
+        encomenda = SimpleNamespace(id=7, utilizador=SimpleNamespace(telegram_id="5551234"))
+        erro = RuntimeError("POST https://api.telegram.org/bot123:SEGREDO/sendMessage")
+        with override_settings(TELEGRAM_TOKEN="123:SEGREDO"), \
+             patch.object(views.httpx, "post", side_effect=erro), \
+             self.assertLogs("core.views", level="INFO") as logs:
+            views._enviar_telegram(encomenda, "olá")
+        texto = "\n".join(logs.output)
+        self.assertIn("RuntimeError", texto)
+        self.assertNotIn("SEGREDO", texto)
+        self.assertNotIn("5551234", texto)

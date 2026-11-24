@@ -7,6 +7,8 @@ from collections import defaultdict
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from security.sanitization import pseudonimo
+
 logger = logging.getLogger(__name__)
 
 # ── Rate limiting ──────────────────────────────────────────────────
@@ -27,7 +29,7 @@ def rate_limit(func):
                 t for t in _rate_data[user_id] if agora - t < RATE_WINDOW
             ]
             if len(_rate_data[user_id]) >= RATE_LIMIT:
-                logger.warning(f"Rate limit atingido: user_id={user_id}")
+                logger.warning("Rate limit atingido: utilizador=%s", pseudonimo(user_id))
                 if update.message:
                     await update.message.reply_text(
                         "⚠️ Demasiados pedidos. Aguarda alguns segundos."
@@ -52,7 +54,7 @@ def admin_only(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         if user_id not in ADMIN_IDS:
-            logger.warning(f"Acesso não autorizado: user_id={user_id}")
+            logger.warning("Acesso não autorizado: utilizador=%s", pseudonimo(user_id))
             if update.message:
                 await update.message.reply_text("🚫 Acesso restrito.")
             elif update.callback_query:
@@ -67,7 +69,7 @@ def log_acao(acao: str):
         @wraps(func)
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user = update.effective_user
-            logger.info(f"[{acao}] user_id={user.id} username=@{user.username}")
+            logger.info("[%s] utilizador=%s", acao, pseudonimo(user.id))  # no username (SEC-08)
             return await func(update, context)
         return wrapper
     return decorator
