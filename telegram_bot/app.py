@@ -34,7 +34,7 @@ def configurar_logs(pasta: Path) -> None:
 
 
 def variaveis_em_falta(ambiente=os.environ):
-    return [nome for nome in VARIAVEIS_OBRIGATORIAS if not ambiente.get(nome)]
+    return [nome for nome in VARIAVEIS_OBRIGATORIAS if not (ambiente.get(nome) or "").strip()]
 
 
 def main():

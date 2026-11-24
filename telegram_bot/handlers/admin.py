@@ -240,7 +240,7 @@ async def utilizador_toggle(query, context, data, user_id):
     estado_label = "✅ desbloqueado" if novo_ativo else "🚫 bloqueado"
     await responder(
         query, context,
-        f"👤 *{md(u.nome, '*')}*\n\nO utilizador foi {estado_label}.",
+        f"👤 {u.nome}\n\nO utilizador foi {estado_label}.",  # plain text: no Markdown, no escaping
         kb.teclado_voltar_admin(), parse_mode=None
     )
 

@@ -483,8 +483,9 @@ def cancelar_por_expiracao(pagamento_id: int, sessao_id: str) -> bool:
 
     All in one transaction, under the order row lock that payment-session code also
     takes (so a concurrent replacement either finished first, and this session is no
-    longer the stored one, or waits and then sees the order cancelled). Marks the payment
-    "falhado" in every case. Returns True only if the order was cancelled now.
+    longer the stored one, or waits and then sees the order cancelled). If this session is
+    still the stored one and its payment is pending, marks the payment "falhado"; otherwise
+    changes nothing. Returns True only if the order was cancelled now.
     """
     with transaction.atomic():
         encomenda_id = Pagamento.objects.values_list('encomenda_id', flat=True).get(pk=pagamento_id)
