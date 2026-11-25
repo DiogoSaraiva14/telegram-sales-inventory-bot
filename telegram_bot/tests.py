@@ -920,3 +920,60 @@ class AuditoriaHandlerTests(SimpleTestCase):
     async def test_empty_log(self):
         _, texto, botoes, _ = await self._abrir("admin_auditoria", [], False)
         self.assertEqual((texto, botoes), ("📜 Sem registos de auditoria.", [("🔙 Painel Admin", "admin_menu")]))
+
+
+class ListasAdminPaginadasTests(SimpleTestCase):
+    """Products, stock, orders and customers: 10 per page, with page buttons."""
+
+    LISTAS = (
+        ("admin_produtos", "admin_produtos_p_", "produtos", "get_todos_produtos"),
+        ("admin_stock", "admin_stock_p_", "stock", "get_todos_produtos"),
+        ("admin_encomendas", "admin_encomendas_p_", "encomendas", "get_encomendas_ativas"),
+        ("admin_utilizadores", "admin_utilizadores_p_", "utilizadores", "get_todos_utilizadores"),
+    )
+
+    def linha(self):
+        return SimpleNamespace(id=4, nome="Linha", preco=Decimal("1.00"), stock_atual=2, ativo=True,
+                               username=None, telegram_id="99", estado="pendente", total=Decimal("1.00"),
+                               utilizador=SimpleNamespace(nome="Ana"))
+
+    async def _abrir(self, handler, servico, data, paginas):
+        """paginas: {page: (rows, has_more)}; returns the pages asked, the text and the buttons."""
+        responder = AsyncMock()
+        pedido = AsyncMock(side_effect=lambda p: paginas.get(p, ([], False)))
+        with patch.object(admin.services, servico, pedido), patch.object(admin, "responder", responder):
+            await getattr(admin, handler)(MagicMock(), MagicMock(), data, 1)
+        args = responder.await_args.args
+        return [c.args[0] for c in pedido.await_args_list], args[2], _botoes(args[3])
+
+    async def test_a_middle_page_has_both_page_buttons(self):
+        for exato, prefixo, handler, servico in self.LISTAS:
+            with self.subTest(handler):
+                pedidas, texto, botoes = await self._abrir(handler, servico, f"{prefixo}2", {2: ([self.linha()], True)})
+                self.assertEqual(pedidas, [2])
+                self.assertIn("· página 3", texto.split("\n")[0])
+                self.assertEqual(botoes[-3:], [("⬅️ Anterior", f"{prefixo}1"), ("Seguinte ➡️", f"{prefixo}3"),
+                                               ("🔙 Painel Admin", "admin_menu")])
+                self.assertEqual(encontrar_rota(f"{prefixo}2"), (getattr(admin, handler), True))
+                self.assertEqual(validar_callback(f"{prefixo}2"), f"{prefixo}2")
+
+    async def test_a_short_list_has_no_page_buttons_or_number(self):
+        for exato, prefixo, handler, servico in self.LISTAS:
+            with self.subTest(handler):
+                pedidas, texto, botoes = await self._abrir(handler, servico, exato, {0: ([self.linha()], False)})
+                self.assertEqual(pedidas, [0])
+                self.assertNotIn("página", texto)
+                self.assertEqual(len(botoes), 2)
+                self.assertEqual(botoes[-1], ("🔙 Painel Admin", "admin_menu"))
+
+    async def test_a_page_past_the_end_or_a_bad_page_shows_the_first(self):
+        _, prefixo, handler, servico = self.LISTAS[0]
+        pedidas, texto, _ = await self._abrir(handler, servico, f"{prefixo}7", {0: ([self.linha()], True)})
+        self.assertEqual((pedidas, "· página 1" in texto), ([7, 0], True))
+        for data in (f"{prefixo}x", f"{prefixo}-1", f"{prefixo}99999"):
+            self.assertEqual((await self._abrir(handler, servico, data, {0: ([self.linha()], False)}))[0], [0], data)
+
+    async def test_an_empty_list_says_so(self):
+        _, prefixo, handler, servico = self.LISTAS[2]
+        _, texto, botoes = await self._abrir(handler, servico, "admin_encomendas", {})
+        self.assertEqual((texto, botoes), ("📋 Sem encomendas activas de momento.", [("🔙 Painel Admin", "admin_menu")]))

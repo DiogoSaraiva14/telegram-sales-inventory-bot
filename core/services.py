@@ -80,8 +80,16 @@ def obter_loja():
 async def obter_loja_async():
     return await sync_to_async(obter_loja)()
 
-async def get_todos_utilizadores():
-    return await sync_to_async(list)(Utilizador.objects.all().order_by('nome'))
+POR_PAGINA = 10  # rows per admin list page: buttons stay on one phone screen
+
+def _pagina(queryset, pagina: int):
+    """Page n (0 is the first) of an ordered queryset: (rows, there_is_a_next_page)."""
+    inicio = pagina * POR_PAGINA
+    linhas = list(queryset[inicio:inicio + POR_PAGINA + 1])
+    return linhas[:POR_PAGINA], len(linhas) > POR_PAGINA
+
+async def get_todos_utilizadores(pagina: int = 0):
+    return await sync_to_async(_pagina)(Utilizador.objects.order_by('nome', 'id'), pagina)
 
 async def toggle_utilizador_ativo(telegram_id: str) -> tuple:
     utilizador = await sync_to_async(Utilizador.objects.get)(telegram_id=telegram_id)
@@ -110,9 +118,10 @@ async def get_produto(produto_id: int):
 async def get_produto_admin(produto_id: int):
     return await sync_to_async(Produto.objects.select_related('categoria').get)(id=produto_id)
 
-async def get_todos_produtos():
-    return await sync_to_async(list)(
-        Produto.objects.select_related('categoria').order_by('categoria__ordem', 'categoria__nome', 'nome')
+async def get_todos_produtos(pagina: int = 0):
+    return await sync_to_async(_pagina)(
+        Produto.objects.select_related('categoria').order_by('categoria__ordem', 'categoria__nome', 'nome', 'id'),
+        pagina,
     )
 
 async def alternar_produto_ativo(produto):
@@ -150,11 +159,12 @@ async def get_encomendas_utilizador(telegram_id):
         .order_by('-data_encomenda')
     )
 
-async def get_encomendas_ativas():
-    return await sync_to_async(list)(
+async def get_encomendas_ativas(pagina: int = 0):
+    return await sync_to_async(_pagina)(
         Encomenda.objects.filter(estado__in=['pendente', 'confirmada', 'enviada'])
         .select_related('utilizador')
-        .order_by('data_encomenda')
+        .order_by('data_encomenda', 'id'),
+        pagina,
     )
 
 async def get_encomenda_detalhe(encomenda_id: int):
@@ -198,14 +208,9 @@ async def atualizar_estado_encomenda(encomenda_id: int, novo_estado: str):
 
 # ── Auditoria ──────────────────────────────────────────────────────────────
 
-AUDITORIA_POR_PAGINA = 10
-
 def registos_auditoria(pagina: int):
     """One page of audit rows, newest first: (rows, there_are_older_rows)."""
-    inicio = pagina * AUDITORIA_POR_PAGINA
-    registos = list(RegistoAuditoria.objects.select_related('utilizador')
-                    .order_by('-data_hora', '-id')[inicio:inicio + AUDITORIA_POR_PAGINA + 1])
-    return registos[:AUDITORIA_POR_PAGINA], len(registos) > AUDITORIA_POR_PAGINA
+    return _pagina(RegistoAuditoria.objects.select_related('utilizador').order_by('-data_hora', '-id'), pagina)
 
 async def get_registos_auditoria(pagina: int = 0):
     return await sync_to_async(registos_auditoria)(pagina)
