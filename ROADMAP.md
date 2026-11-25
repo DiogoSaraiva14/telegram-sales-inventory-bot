@@ -16,7 +16,7 @@ Status: draft sequencing from a static code review. Keep the work bounded; do no
 | `.env.example`, environment validation, setup guide | 1 | Done (Python version documented as the one tested: 3.13) |
 | CI | 1 | Added: GitHub Actions runs check, migration drift and the PostgreSQL suite |
 | Expiry stock release (SEC-04) | 2 | Done for expired sessions; orders that never got a session still hold stock |
-| Webhook idempotency (SEC-05) | 2 | Done with row locks; no notification retry |
+| Webhook idempotency (SEC-05) | 2 | Done with row locks; customer messages queued and retried for 24 h |
 | Cancellation and refunds (SEC-06) | 2 | Done: one cancel operation for both admin surfaces, session expiry, full refunds; closes the checkout cancellation window |
 | Safe settings defaults (SEC-01) | 4 | Done; HTTPS, cookie and HSTS settings added in cart Stage 4 (opt-in with `DJANGO_HTTPS`) |
 | Escape dynamic Telegram Markdown (SEC-07) | 4 | Done; not checked against live Telegram |
@@ -67,7 +67,7 @@ The plan is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_
 - Make Stripe webhook updates idempotent and safe under retries and concurrent delivery.
 - Make payment success/cancellation/refund and order fulfillment consistent across Telegram admin, Django admin, and Stripe.
 - Prevent Django admin line edits from leaving order totals, payments, or stock movements inconsistent.
-- Separate notification delivery from committed payment/order state and support retry.
+- Separate notification delivery from committed payment/order state and support retry. (Done: `core/notificacoes.py` queues each message after the change commits, and the cleanup run resends it for 24 hours.)
 
 **Done when:** failure, retry, duplicate event, expiry, cancellation, and concurrent checkout scenarios preserve agreed invariants.
 

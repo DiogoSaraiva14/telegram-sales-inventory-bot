@@ -6,7 +6,7 @@ from django.db import transaction
 from django.shortcuts import redirect
 import stripe
 from . import services
-from .views import notificar_estado
+from .notificacoes import notificar_estado
 from .models import (
     Utilizador, Categoria, Loja, Produto, Encomenda,
     LinhaEncomenda, Pagamento, MovimentoStock, RegistoAuditoria
