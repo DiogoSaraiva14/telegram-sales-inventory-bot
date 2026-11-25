@@ -844,3 +844,79 @@ class LojaHandlerTests(SimpleTestCase):
     def test_main_menu_shows_the_admin_button_only_for_admins(self):
         self.assertNotIn("admin_menu", [d for _, d in _botoes(keyboards.teclado_menu_principal(False))])
         self.assertIn("admin_menu", [d for _, d in _botoes(keyboards.teclado_menu_principal(True))])
+
+
+class RateLimitTests(SimpleTestCase):
+    """20 actions per 10 s: normal tapping never blocks; a flood gets a toast, not a pop-up."""
+
+    def setUp(self):
+        from security import decorators
+        self.decorators = decorators
+        self.agora = [1000.0]
+        self.alvo = AsyncMock()
+        self.protegido = decorators.rate_limit(self.alvo)
+        for p in (patch.dict(decorators._rate_data, clear=True), patch.object(decorators, "_ultima_limpeza", 0.0),
+                  patch.object(decorators, "time", SimpleNamespace(monotonic=lambda: self.agora[0]))):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def toque(self):
+        query = MagicMock(answer=AsyncMock())
+        return MagicMock(effective_user=SimpleNamespace(id=7), message=None, callback_query=query)
+
+    async def test_two_taps_a_second_for_a_minute_are_never_blocked(self):
+        for _ in range(120):
+            await self.protegido(self.toque(), MagicMock())
+            self.agora[0] += 0.5
+        self.assertEqual(self.alvo.await_count, 120)
+
+    async def test_a_flood_is_stopped_with_a_toast(self):
+        for _ in range(self.decorators.RATE_LIMIT):
+            await self.protegido(self.toque(), MagicMock())
+        bloqueado = self.toque()
+        await self.protegido(bloqueado, MagicMock())
+        self.assertEqual(self.alvo.await_count, 20)
+        bloqueado.callback_query.answer.assert_awaited_once_with("⚠️ Demasiados pedidos. Aguarda um momento.")
+        self.agora[0] += self.decorators.RATE_WINDOW
+        await self.protegido(self.toque(), MagicMock())
+        self.assertEqual(self.alvo.await_count, 21)
+
+
+class AuditoriaHandlerTests(SimpleTestCase):
+    """The Telegram audit screen: readable, local time, who and what, 10 per page."""
+
+    def registo(self, acao="CANCELAR_ENCOMENDA", nome="Cliente Ana", descricao="#3 cancelada; stock devolvido"):
+        from datetime import datetime, timezone as tz
+        utilizador = SimpleNamespace(nome=nome) if nome else None
+        return SimpleNamespace(data_hora=datetime(2026, 7, 1, 12, 0, tzinfo=tz.utc), acao=acao,
+                               utilizador_id=1 if nome else None, utilizador=utilizador, descricao=descricao)
+
+    async def _abrir(self, data, registos, ha_mais):
+        responder, pedido = AsyncMock(), AsyncMock(return_value=(registos, ha_mais))
+        with patch.object(admin.services, "get_registos_auditoria", pedido), patch.object(admin, "responder", responder):
+            await admin.auditoria(MagicMock(), MagicMock(), data, 1)
+        args, kwargs = responder.await_args
+        return pedido.await_args.args[0], args[2], _botoes(args[3]), kwargs.get("parse_mode")
+
+    async def test_entries_are_readable_in_shop_time(self):
+        registos = [self.registo(), self.registo("AJUSTE_STOCK", None, "x" * 300), self.registo("CODIGO_NOVO", None, "")]
+        pagina, texto, botoes, parse_mode = await self._abrir("admin_auditoria", registos, True)
+        self.assertEqual((pagina, parse_mode), (0, None))
+        self.assertIn("01/07/2026 13:00 · ❌ Encomenda cancelada\n👤 Cliente Ana\n#3 cancelada; stock devolvido", texto)
+        self.assertIn("📊 Ajuste de stock\n" + "x" * 199 + "…", texto)
+        self.assertIn("· CODIGO_NOVO", texto)  # an unknown code is shown as stored
+        self.assertEqual(botoes, [("Mais antigos ➡️", "admin_auditoria_p_1"), ("🔙 Painel Admin", "admin_menu")])
+
+    async def test_pages_move_both_ways_and_bad_pages_fall_back_to_the_first(self):
+        pagina, texto, botoes, _ = await self._abrir("admin_auditoria_p_2", [self.registo()], False)
+        self.assertEqual(pagina, 2)
+        self.assertTrue(texto.startswith("📜 Registos de auditoria · página 3"))
+        self.assertEqual(botoes[0], ("⬅️ Mais recentes", "admin_auditoria_p_1"))
+        for data in ("admin_auditoria_p_x", "admin_auditoria_p_99999", "admin_auditoria_p_-1"):
+            self.assertEqual((await self._abrir(data, [self.registo()], False))[0], 0, data)
+        self.assertEqual(encontrar_rota("admin_auditoria_p_3"), (admin.auditoria, True))
+        self.assertEqual(validar_callback("admin_auditoria_p_3"), "admin_auditoria_p_3")
+
+    async def test_empty_log(self):
+        _, texto, botoes, _ = await self._abrir("admin_auditoria", [], False)
+        self.assertEqual((texto, botoes), ("📜 Sem registos de auditoria.", [("🔙 Painel Admin", "admin_menu")]))

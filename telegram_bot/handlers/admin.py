@@ -10,7 +10,9 @@ import stripe
 from core.models import Utilizador, Produto, Encomenda
 from core import services
 from security.sanitization import sanitizar_id, sanitizar_delta_stock, EntradaInvalida
-from telegram_bot.constants import ESTADO_EMOJI
+from django.utils import timezone
+
+from telegram_bot.constants import ESTADO_EMOJI, ROTULO_AUDITORIA
 from telegram_bot.notifications import notificar_cliente
 from telegram_bot.ui import md, responder
 from telegram_bot import keyboards as kb
@@ -249,19 +251,31 @@ async def utilizador_toggle(query, context, data, user_id):
 
 # ── Auditoria ──────────────────────────────────────────────────────────────
 
+def _texto_registo(r):
+    """One audit entry: when (shop time), what happened, to whom, and the details."""
+    quando = timezone.localtime(r.data_hora).strftime('%d/%m/%Y %H:%M')
+    linhas = [f"{quando} · {ROTULO_AUDITORIA.get(r.acao, r.acao)}"]
+    if r.utilizador_id:
+        linhas.append(f"👤 {r.utilizador.nome}")
+    if r.descricao:
+        linhas.append(r.descricao if len(r.descricao) <= 200 else r.descricao[:199] + "…")
+    return "\n".join(linhas)
+
+
 async def auditoria(query, context, data, user_id):
-    registos = await services.get_ultimos_registos_auditoria(10)
+    """Newest first, 10 per page; admin_auditoria_p_<n> opens page n (0 is the newest)."""
+    valor = data[len("admin_auditoria_p_"):] if data.startswith("admin_auditoria_p_") else "0"
+    pagina = int(valor) if valor.isdecimal() and len(valor) <= 4 else 0
+    registos, ha_mais_antigos = await services.get_registos_auditoria(pagina)
     if not registos:
-        await responder(query, context, "📜 Sem registos de auditoria.", kb.teclado_voltar_admin())
+        texto = "📜 Sem registos de auditoria." if pagina == 0 else "📜 Não há registos mais antigos."
+        await responder(query, context, texto, kb.teclado_auditoria(0, False), parse_mode=None)
         return
-    linhas = [
-        f"🔹 `{r.data_hora.strftime('%d/%m %H:%M')}` — *{md(r.acao, '*')}* — {md(r.entidade)}"
-        for r in registos
-    ]
+    # Plain text: names and descriptions need no Markdown escaping.
     await responder(
         query, context,
-        "📜 *Últimos Registos de Auditoria*\n\n" + "\n".join(linhas),
-        kb.teclado_voltar_admin()
+        f"📜 Registos de auditoria · página {pagina + 1}\n\n" + "\n\n".join(_texto_registo(r) for r in registos),
+        kb.teclado_auditoria(pagina, ha_mais_antigos), parse_mode=None,
     )
 
 
@@ -284,4 +298,5 @@ PREFIX_ROUTES = (
     ("admin_enc_entregue_", _mudar_estado('entregue', 'ENTREGAR')),
     ("admin_enc_cancelar_", _mudar_estado('cancelada', 'CANCELAR')),
     ("admin_utilizador_", utilizador_toggle),
+    ("admin_auditoria_p_", auditoria),
 )

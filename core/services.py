@@ -198,11 +198,17 @@ async def atualizar_estado_encomenda(encomenda_id: int, novo_estado: str):
 
 # ── Auditoria ──────────────────────────────────────────────────────────────
 
-async def get_ultimos_registos_auditoria(n=10):
-    return await sync_to_async(list)(
-        RegistoAuditoria.objects.select_related('utilizador')
-        .order_by('-data_hora')[:n]
-    )
+AUDITORIA_POR_PAGINA = 10
+
+def registos_auditoria(pagina: int):
+    """One page of audit rows, newest first: (rows, there_are_older_rows)."""
+    inicio = pagina * AUDITORIA_POR_PAGINA
+    registos = list(RegistoAuditoria.objects.select_related('utilizador')
+                    .order_by('-data_hora', '-id')[inicio:inicio + AUDITORIA_POR_PAGINA + 1])
+    return registos[:AUDITORIA_POR_PAGINA], len(registos) > AUDITORIA_POR_PAGINA
+
+async def get_registos_auditoria(pagina: int = 0):
+    return await sync_to_async(registos_auditoria)(pagina)
 
 async def registar_auditoria(utilizador_id, acao, entidade, descricao=""):
     utilizador = await sync_to_async(Utilizador.objects.get)(
