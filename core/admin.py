@@ -2,6 +2,7 @@
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 from django.contrib import messages
+from django.db import transaction
 import stripe
 from . import services
 from .views import notificar_estado
@@ -73,7 +74,7 @@ class ProdutoAdmin(admin.ModelAdmin):
 
     @admin.action(description='✅ Ativar produtos selecionados')
     def ativar_produtos(self, request, queryset):
-        atualizados = queryset.update(ativo=True)
+        atualizados = self._definir_ativo(queryset, True)
         self.message_user(request, f"{atualizados} produto(s) ativado(s).", messages.SUCCESS)
 
     def save_model(self, request, obj, form, change):
@@ -91,9 +92,17 @@ class ProdutoAdmin(admin.ModelAdmin):
             descricao=f'{obj.nome}: delta={delta}, novo stock={obj.stock_atual} (Django admin: {request.user})',
         )
 
+    @staticmethod
+    def _definir_ativo(queryset, ativo):
+        # Products are always locked in one query ordered by id, as in checkout (no deadlocks).
+        with transaction.atomic():
+            ids = list(Produto.objects.select_for_update().filter(pk__in=queryset.values('pk'))
+                       .order_by('pk').values_list('pk', flat=True))
+            return Produto.objects.filter(pk__in=ids).update(ativo=ativo)
+
     @admin.action(description='❌ Desativar produtos selecionados')
     def desativar_produtos(self, request, queryset):
-        atualizados = queryset.update(ativo=False)
+        atualizados = self._definir_ativo(queryset, False)
         self.message_user(request, f"{atualizados} produto(s) desativado(s).", messages.WARNING)
 
 
@@ -123,8 +132,8 @@ class EncomendaAdmin(admin.ModelAdmin):
     list_filter = ['estado']
     search_fields = ['utilizador__nome', 'utilizador__telegram_id']
     # Only the internal notes are editable; state changes go through the actions below (SEC-10).
-    fields = ['utilizador', 'estado', 'total', 'data_encomenda', 'data_atualizacao', 'notas']
-    readonly_fields = ['utilizador', 'estado', 'total', 'data_encomenda', 'data_atualizacao']
+    fields = ['utilizador', 'estado', 'total', 'data_encomenda', 'data_atualizacao', 'confirmacao', 'notas']
+    readonly_fields = ['utilizador', 'estado', 'total', 'data_encomenda', 'data_atualizacao', 'confirmacao']
     inlines = [LinhaEncomendaInline]
     actions = ['marcar_enviada', 'marcar_entregue', 'marcar_cancelada']
 

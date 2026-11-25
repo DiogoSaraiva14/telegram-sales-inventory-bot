@@ -98,6 +98,36 @@ class Produto(models.Model):
         ordering        = ['nome']
 
 
+# ── Ecrã de confirmação (cart design, Stage 2) ─────────────────────────────
+
+class ConfirmacaoCarrinho(models.Model):
+    """What a confirmation screen showed: written once when drawn, never changed.
+
+    linhas: [{produto_id, nome, quantidade, preco_unitario_centimos}], ordered by produto_id.
+    Prices are integer cents, so JSON holds them exactly.
+    """
+    nonce            = models.CharField(max_length=16, unique=True, editable=False)
+    utilizador       = models.ForeignKey(Utilizador, on_delete=models.CASCADE, related_name='confirmacoes')
+    criada_em        = models.DateTimeField(auto_now_add=True)
+    # Null only for Stage 2 one-product screens, which don't come from a cart.
+    revisao_carrinho = models.IntegerField(null=True, blank=True)
+    total_centimos   = models.PositiveIntegerField()
+    linhas           = models.JSONField()
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValueError("ConfirmacaoCarrinho é imutável depois de criada")
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Confirmação {self.nonce}"
+
+    class Meta:
+        db_table        = 'confirmacao_carrinho'
+        verbose_name    = "Confirmação"
+        verbose_name_plural = "Confirmações"
+
+
 # ── Encomenda ──────────────────────────────────────────────────────────────
 
 class Encomenda(models.Model):
@@ -120,6 +150,11 @@ class Encomenda(models.Model):
     notas           = models.TextField(blank=True, null=True)   # ✅ NOVO — notas internas do admin
     # Nonce do ecrã de confirmação do bot: um ecrã cria no máximo uma encomenda (SEC-13).
     chave_confirmacao = models.CharField(max_length=16, null=True, blank=True, unique=True, editable=False)
+    # The screen this order was created from; null for orders from before the cart ("legacy").
+    confirmacao = models.OneToOneField(
+        ConfirmacaoCarrinho, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='encomenda', editable=False,
+    )
 
     def __str__(self):
         return f"Encomenda #{self.id} — {self.utilizador.nome}"
@@ -129,6 +164,13 @@ class Encomenda(models.Model):
         verbose_name    = "Encomenda"
         verbose_name_plural = "Encomendas"
         ordering        = ['-data_encomenda']
+        constraints     = [
+            # Legacy orders are excluded; order creation also refuses while any pending order exists.
+            models.UniqueConstraint(
+                fields=['utilizador'], condition=models.Q(estado='pendente', confirmacao__isnull=False),
+                name='uma_encomenda_pendente_por_cliente',
+            ),
+        ]
 
 
 # ── Linha de Encomenda ─────────────────────────────────────────────────────

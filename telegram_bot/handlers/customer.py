@@ -12,8 +12,10 @@ from core import services
 from security.sanitization import sanitizar_id, EntradaInvalida
 from telegram_bot import confirmacao
 from telegram_bot.constants import (
-    ESTADO_EMOJI, MENSAGEM_ECRA_EXPIRADO, MENSAGEM_FALHA_REGISTO,
-    MENSAGEM_JA_REGISTADA, MENSAGEM_MENU_EXPIRADO, MENSAGEM_PAGAMENTO_A_CONFIRMAR,
+    ESTADO_EMOJI, MENSAGEM_ALTERADO, MENSAGEM_ECRA_EXPIRADO, MENSAGEM_ENCOMENDA_PENDENTE,
+    MENSAGEM_FALHA_REGISTO, MENSAGEM_JA_REGISTADA, MENSAGEM_MENU_EXPIRADO,
+    MENSAGEM_PAGAMENTO_A_CONFIRMAR, MENSAGEM_PEDIDO_INVALIDO, MENSAGEM_PRAZO_TERMINADO,
+    ROTULO_ALTERACAO,
 )
 from telegram_bot.ui import md, responder
 from telegram_bot import keyboards as kb
@@ -137,6 +139,7 @@ async def encomenda_detalhe(query, context, data, user_id):
 
 
 async def encomendar(query, context, data, user_id):
+    """Stage 2 one-product checkout: save the screen as a one-line snapshot, then show it."""
     try:
         p = await services.get_produto(sanitizar_id(data.split("_")[1], campo="produto_id"))
     except (EntradaInvalida, Produto.DoesNotExist, ValueError):
@@ -146,13 +149,18 @@ async def encomendar(query, context, data, user_id):
     if p.stock_atual <= 0:
         await query.answer("❌ Produto sem stock disponível.", show_alert=True)
         return
+    resultado, snap = await services.criar_confirmacao_async(query.from_user, [(p.id, 1)])
+    if resultado == "bloqueado":  # sold out or deactivated since the product screen was drawn
+        await _mostrar_alterado(query, context, snap, f"produto_{p.id}")
+        return
+    linha = snap.linhas[0]
     await responder(
         query, context,
         f"🛒 *Confirmar Encomenda*\n\n"
-        f"Produto: *{md(p.nome, '*')}*\n"
-        f"Preço: *{p.preco:.2f}€*\n\n"
+        f"Produto: *{md(linha['nome'], '*')}*\n"
+        f"Preço: *{services._euros(linha['preco_unitario_centimos']):.2f}€*\n\n"
         f"Desejas confirmar esta encomenda?",
-        kb.teclado_confirmar_encomenda(p, confirmacao.callback_confirmar(p.id, confirmacao.gerar_chave()))
+        kb.teclado_confirmar_encomenda(confirmacao.callback_confirmar(snap.nonce), f"produto_{p.id}")
     )
 
 
@@ -165,9 +173,19 @@ async def _mostrar(query, context, texto, teclado, parse_mode="Markdown"):
             raise
 
 
-async def _mostrar_sem_stock(query, context):
-    await _mostrar(query, context, "😔 Lamentamos, este produto ficou sem stock entretanto.",
-                   kb.teclado_voltar_catalogo(), parse_mode=None)
+async def _mostrar_alterado(query, context, alteracoes, voltar):
+    """Confirm found a difference: nothing was ordered; list what changed (plain text)."""
+    linhas = [MENSAGEM_ALTERADO, ""]
+    for a in alteracoes:
+        rotulo = ROTULO_ALTERACAO[a.tipo].format(antes=a.antes, depois=a.depois)
+        linhas.append(f"• {a.nome[:60] or 'Produto'}: {rotulo}")
+    await _mostrar(query, context, "\n".join(linhas), kb.teclado_alterado(voltar), parse_mode=None)
+
+
+def _texto_linhas(linhas):
+    return "\n".join(
+        f"• {l.quantidade}× {md((l.nome_produto or l.produto.nome)[:60])} — {l.subtotal:.2f}€" for l in linhas
+    )
 
 
 async def _mostrar_pagamento(query, context, data, encomenda):
@@ -189,7 +207,7 @@ async def _mostrar_pagamento(query, context, data, encomenda):
         await _mostrar(
             query, context,
             f"✅ *Encomenda #{encomenda.id} criada!*\n\n"
-            f"Produto: *{md(linhas[0].nome_produto, '*')}*\n"
+            f"{_texto_linhas(linhas)}\n\n"
             f"Total: *{encomenda.total:.2f}€*\n\n"
             f"Clica no botão abaixo para completar o pagamento.\n"
             f"A encomenda é confirmada automaticamente após o pagamento. 💳",
@@ -198,64 +216,55 @@ async def _mostrar_pagamento(query, context, data, encomenda):
     elif estado == "a_confirmar":
         await _mostrar(query, context, MENSAGEM_PAGAMENTO_A_CONFIRMAR.format(id=encomenda.id),
                        kb.teclado_ver_encomendas(), parse_mode=None)
+    elif estado == "expirada":
+        await _mostrar(query, context, MENSAGEM_PRAZO_TERMINADO,
+                       kb.teclado_ver_encomenda(encomenda.id), parse_mode=None)
     # "paga" / "nao_ativa": the alert already said it; leave the message as it is.
 
 
+async def _mostrar_invalido(query, context):
+    await _mostrar(query, context, MENSAGEM_PEDIDO_INVALIDO, kb.teclado_voltar_menu(), parse_mode=None)
+
+
 async def confirmar_encomenda(query, context, data, user_id):
-    tipo, pedido = confirmacao.ler_callback(data)
-    if tipo == "antigo":  # button drawn before confirmation tokens existed (D3)
-        await _mostrar(query, context, MENSAGEM_ECRA_EXPIRADO,
-                       kb.teclado_ecra_expirado(pedido), parse_mode=None)
+    tipo, nonce = confirmacao.ler_callback(data)
+    if tipo == "invalido":  # includes the pre-token confirmar_encomenda_<produto_id> buttons
+        await _mostrar(query, context, MENSAGEM_ECRA_EXPIRADO, kb.teclado_ecra_expirado(), parse_mode=None)
         return
-    if tipo == "invalido":
-        await responder(query, context, "❌ Produto não encontrado.",
-                        kb.teclado_voltar_menu(), parse_mode=None)
-        return
-
-    # An existing order always wins, whatever the button's age (§3.4).
-    existente = await services.get_encomenda_por_chave(pedido.chave)
-    if existente is not None:
-        if str(existente.utilizador.telegram_id) != str(user_id):
-            await query.answer("❌ Pedido inválido.", show_alert=True)
-            return
-        await query.answer(MENSAGEM_JA_REGISTADA, show_alert=True)
-        await _mostrar_pagamento(query, context, data, existente)
+    if tipo == "antigo":  # a button from before Stage 2: it can only reopen its existing order
+        existente = await services.get_encomenda_por_chave(nonce)
+        if existente is None:
+            await _mostrar(query, context, MENSAGEM_ECRA_EXPIRADO, kb.teclado_ecra_expirado(), parse_mode=None)
+        elif str(existente.utilizador.telegram_id) != str(user_id):
+            await query.answer(MENSAGEM_PEDIDO_INVALIDO, show_alert=True)
+        else:
+            await query.answer(MENSAGEM_JA_REGISTADA, show_alert=True)
+            await _mostrar_pagamento(query, context, data, existente)
         return
 
-    if confirmacao.expirada(pedido.emitida_em):
-        await _mostrar(query, context, MENSAGEM_ECRA_EXPIRADO,
-                       kb.teclado_ecra_expirado(pedido.produto_id), parse_mode=None)
-        return
     try:
-        p = await services.get_produto(pedido.produto_id)
-    except Produto.DoesNotExist:
-        await responder(query, context, "❌ Produto não encontrado.",
-                        kb.teclado_voltar_menu(), parse_mode=None)
-        return
-    if p.stock_atual <= 0:
-        await _mostrar_sem_stock(query, context)
-        return
-
-    await query.answer()  # stop the button spinner before the transaction and Stripe
-    try:
-        resultado, encomenda = await services.reservar_encomenda_async(query.from_user, p.id, pedido.chave)
+        resultado, valor = await services.criar_encomenda_de_confirmacao_async(query.from_user, nonce)
     except Exception:
-        logger.exception("Falha ao registar encomenda: produto_id=%s etapa=reservar", p.id)
-        await _mostrar(query, context, MENSAGEM_FALHA_REGISTO,
-                       kb.teclado_falha_registo(data, p.categoria_id), parse_mode=None)
+        logger.exception("Falha ao registar encomenda: etapa=criar_encomenda")
+        await _mostrar(query, context, MENSAGEM_FALHA_REGISTO, kb.teclado_falha_registo(data), parse_mode=None)
         return
     if resultado == "existente":
-        # Lost a race with the same token. Recover too: the winner may have stopped
-        # before creating the payment session. Same stable key, so no second session.
-        await _mostrar_pagamento(query, context, data, encomenda)
-        return
-    if resultado == "de_outro_utilizador":
-        await _mostrar(query, context, "❌ Pedido inválido.", kb.teclado_voltar_menu(), parse_mode=None)
-        return
-    if resultado == "sem_stock":
-        await _mostrar_sem_stock(query, context)
-        return
-    await _mostrar_pagamento(query, context, data, encomenda)
+        # Tapped again, or lost a race with the same screen. Recover too: the first tap may
+        # have stopped before creating the payment session. Same stable key, so no second session.
+        await query.answer(MENSAGEM_JA_REGISTADA, show_alert=True)
+        await _mostrar_pagamento(query, context, data, valor)
+    elif resultado == "criada":
+        await query.answer()  # stop the button spinner before Stripe
+        await _mostrar_pagamento(query, context, data, valor)
+    elif resultado == "alterado":
+        await _mostrar_alterado(query, context, valor, f"produto_{valor[0].produto_id}")
+    elif resultado == "pendente":
+        await _mostrar(query, context, MENSAGEM_ENCOMENDA_PENDENTE.format(id=valor.id),
+                       kb.teclado_ver_encomenda(valor.id), parse_mode=None)
+    elif resultado == "expirada":
+        await _mostrar(query, context, MENSAGEM_ECRA_EXPIRADO, kb.teclado_ecra_expirado(), parse_mode=None)
+    else:  # "de_outro_utilizador", "invalida"
+        await _mostrar_invalido(query, context)
 
 
 async def menu_ajuda(query, context, data, user_id):

@@ -1,7 +1,9 @@
-"""Cancel pending orders that never got a Stripe payment session (SEC-03).
+"""Reconcile pending orders older than N hours (SEC-03, cart design G12).
 
-Run it from cron or Task Scheduler, for example hourly:
-    python manage.py cancelar_encomendas_abandonadas
+Each one is cancelled with its stock returned (and any open Stripe session expired),
+or confirmed if its stored Stripe session was paid. A Stripe or database error leaves
+the order unchanged for the next run. Run it from cron every 5 minutes:
+    python manage.py cancelar_encomendas_abandonadas --horas 1
 """
 from django.core.management.base import BaseCommand, CommandError
 
@@ -10,7 +12,8 @@ from core.views import notificar_estado
 
 
 class Command(BaseCommand):
-    help = "Cancela encomendas pendentes sem sessão de pagamento com mais de N horas e devolve o stock."
+    help = ("Reconcilia encomendas pendentes com mais de N horas: cancela e devolve o stock, "
+            "ou confirma as que já foram pagas.")
 
     def add_arguments(self, parser):
         parser.add_argument("--horas", type=int, default=24,
@@ -19,10 +22,14 @@ class Command(BaseCommand):
     def handle(self, *args, horas, **options):
         if horas < 1:  # zero or negative moves the cutoff to now or later: every unpaid order would qualify
             raise CommandError("--horas tem de ser pelo menos 1.")
-        canceladas = 0
+        contagem = {"confirmada": 0, "cancelada": 0, "erro": 0}
         for encomenda_id in services.encomendas_abandonadas(horas):
-            encomenda = services.cancelar_se_abandonada(encomenda_id, horas)
-            if encomenda is not None:  # the transaction committed; tell the customer
-                notificar_estado(encomenda, 'cancelada')
-                canceladas += 1
-        self.stdout.write(f"{canceladas} encomenda(s) abandonada(s) cancelada(s).")
+            resultado, encomenda = services.reconciliar_encomenda(encomenda_id, horas)
+            if resultado in ("confirmada", "cancelada"):  # the transaction committed; tell the customer
+                notificar_estado(encomenda, resultado)
+            if resultado in contagem:
+                contagem[resultado] += 1
+        self.stdout.write(
+            f"Limpeza: {contagem['confirmada']} confirmada(s), {contagem['cancelada']} cancelada(s), "
+            f"{contagem['erro']} erro(s)."
+        )

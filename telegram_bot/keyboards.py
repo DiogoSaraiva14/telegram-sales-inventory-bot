@@ -67,21 +67,37 @@ def teclado_minhas_encomendas(encomendas):
     buttons.append([InlineKeyboardButton("🔙 Menu Principal", callback_data="menu_inicio")])
     return InlineKeyboardMarkup(buttons)
 
-def teclado_confirmar_encomenda(produto, callback_confirmar):
+_MENU = [InlineKeyboardButton("🔙 Menu Principal", callback_data="menu_inicio")]
+
+def teclado_confirmar_encomenda(callback_confirmar, voltar):
+    """voltar: the callback that leads back (the product in Stage 2, the cart in Stage 3)."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Confirmar", callback_data=callback_confirmar)],
-        [InlineKeyboardButton("❌ Cancelar",  callback_data=f"produto_{produto.id}")],
+        [InlineKeyboardButton("❌ Cancelar",  callback_data=voltar)],
     ])
 
-def teclado_ecra_expirado(produto_id):
+def teclado_ecra_expirado():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Voltar ao Produto", callback_data=f"produto_{produto_id}")],
+        [InlineKeyboardButton("🛍️ Ver Catálogo", callback_data="menu_catalogo")],
+        _MENU,
     ])
 
-def teclado_falha_registo(callback_confirmar, categoria_id):
+def teclado_ver_encomenda(encomenda_id):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Ver encomenda", callback_data=f"ver_encomenda_{encomenda_id}")],
+        _MENU,
+    ])
+
+def teclado_alterado(voltar):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Voltar", callback_data=voltar)],
+        _MENU,
+    ])
+
+def teclado_falha_registo(callback_confirmar):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Tentar novamente", callback_data=callback_confirmar)],
-        [InlineKeyboardButton("🔙 Voltar aos produtos", callback_data=f"cat_{categoria_id}")],
+        _MENU,
     ])
 
 def teclado_falha_pagamento(callback_confirmar):
