@@ -1,0 +1,93 @@
+# Stage 0: rights, licence and images
+
+**Status:** open. Prepared on 2026-11-25 from the files on this computer. The answers are the author's to obtain and record below.
+
+Stage 0 comes before selling the package (see [the cart design](designs/cart_resellable_shop.md#stage-0-prerequisites-no-code)). If an item marked "blocks" fails, the reseller goal stops and the project stays a portfolio demo.
+
+**This is not legal advice.** The facts below come from the repository history and package metadata. Whether you may sell the code, and on what terms, needs the course's written answer and, for the reseller contract, a lawyer.
+
+## Summary
+
+| # | Item | Blocks | What the files show | Still needed | Status |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Code ownership and course rights | Yes | All 27 commits in the original repository are by Jose Diogo Pereira Saraiva (2026-05-03 to 2026-06-23). It was hosted on the school's GitLab, in a course group. There's no licence file. | A written answer from the course on whether you may sell or license the code | Open |
+| 2 | Licence for the reseller | Yes | No licence in either repository. Dependencies: mostly permissive, three LGPL-3.0, one MPL-2.0. | Choose the licence model; add third-party notices | Open |
+| 3 | Demo images | Yes | 27 images in the original project, none in this repository: 26 branded product photos and one anime wallpaper | Replace them with your own, licensed or placeholder images | Open; replacing is recommended |
+| 4 | Invoicing position | No | The bot issues no invoices or tax documents | A clause in the reseller contract (draft below) | Open |
+| 5 | Stripe test run | No | A partial Telegram test on 2026-11-25: catalogue and cart worked, and the rate limit was fixed. Payment hasn't run yet. | Run the `DEPLOYMENT.md` checklist | Open |
+
+## 1. Code ownership and course rights
+
+**What the files show:**
+- The original repository `project-2025-2026-p088` was hosted at `gitlab.estig.ipb.pt`, in the group `project-informatics-engineering/2025-2026`. It was a course project at IPB (ESTiG).
+- Its git history has 27 commits, all authored by you. Git only records who committed, not who wrote each line, so it doesn't prove nobody else contributed.
+- This repository started from that code and has been heavily rewritten since: the security fixes SEC-01 to SEC-13 and cart Stages 1–4. It is still derived from the course project.
+
+**Questions to answer, in writing (email to the course coordinator or the school's regulations):**
+1. Do the course or school regulations give IPB, the teachers or the course any rights to code written for this project?
+2. May you sell or license this code commercially, now that the course has ended?
+3. Is there any rule against publishing or reselling course work, for example to protect future editions of the course?
+
+**Questions only you can answer:**
+4. Did any part of the code come from teachers, course templates, other students or tutorials with their own licence?
+5. Did anyone else write code for it, even without commits under their name?
+
+**Keep as evidence:** the written answer (email or the regulation's link and version), the date, and who answered.
+
+## 2. Licence for the reseller
+
+**Choose the model** (the cart brief mentions selling the software rights):
+- **A. Assign all rights** to the reseller. You keep no rights, so you can't reuse the code yourself.
+- **B. Grant a licence** to the reseller to install one copy per client shop. You keep ownership, and can reuse the code in your portfolio.
+
+Either way, the contract should say who maintains the code, who handles security fixes, and that invoicing and legal texts are each shop's responsibility (item 4).
+
+**Third-party licences** (from the installed packages' metadata, pinned in `requirements.txt`):
+
+| Licence | Packages | What to do (summary) |
+| --- | --- | --- |
+| LGPL-3.0 | python-telegram-bot 22.7, psycopg 3.3.4, psycopg-binary 3.3.4 | Ship the licence text and a notice. Use the libraries unmodified and replaceable; installing them with pip already keeps them replaceable. If you ever modify one, its changes must be shared under the LGPL. |
+| MPL-2.0 | certifi 2026.4.22 | Ship a notice. Changes to certifi's own files would have to be shared. |
+| BSD-3-Clause | Django, asgiref, httpcore, httpx, idna, python-dotenv, sqlparse | Keep the copyright notices. |
+| MIT / MIT-CMU | anyio, charset-normalizer, h11, pillow, stripe, urllib3 | Keep the copyright notices. |
+| Apache-2.0 | requests, tzdata | Keep the notices, including any NOTICE file. |
+| PSF-2.0 | typing_extensions | Keep the notice. |
+
+`psycopg-binary` also bundles compiled libraries (libpq, OpenSSL) with their own notices. Installing plain `psycopg` against a system libpq avoids bundling them.
+
+**Action:** add a `THIRD_PARTY_NOTICES.md` (generated from the installed packages) and a `LICENSE` that matches the chosen model. Neither exists yet.
+
+## 3. Demo images
+
+The original project's `media/produtos/` holds 27 images. None of them were brought into this repository, which is safe as it stands.
+
+- **26 product photos of branded parts:** for example ASUS, Corsair, Noctua, Samsung and Western Digital parts, and Intel, AMD and NVIDIA cards and processors. They were most likely copied from manufacturers' or shops' websites, and the copyright belongs to them. Brand names and logos are also trademarks.
+- **1 anime wallpaper:** `meliodas-power-the-seven-deadly-sins-4k-wallpaper-…-uhdpaper.com…jpg`. It shows a commercial anime character and came from a wallpaper site. It must not be redistributed.
+
+**Recommendation:** don't reuse any of them. For a demo, use photos you take yourself, images under a licence that allows commercial redistribution (record the source and licence of each), or plain placeholders. The local demo database already uses no images.
+
+## 4. Invoicing position
+
+The bot doesn't issue invoices, receipts or tax documents. Draft clauses for the reseller contract (to be reviewed by a lawyer):
+
+> **EN:** The software does not issue invoices, receipts or tax documents, and does not calculate taxes or shipping costs. Each shop operator is responsible for invoicing, tax, shipping, consumer withdrawal rights and the legal texts (terms of sale and privacy notice) required where it sells.
+
+> **PT:** O software não emite faturas, recibos nem documentos fiscais, nem calcula impostos ou portes de envio. Cada loja é responsável pela faturação, impostos, envios, direito de livre resolução dos consumidores e textos legais (condições de venda e política de privacidade) exigidos onde vende.
+
+## 5. Stripe test run
+
+Run the "Stripe test-mode checklist" in [DEPLOYMENT.md](../DEPLOYMENT.md) on the demo database. The run on 2026-11-25 stopped before payment: the Stripe CLI on this computer needs `stripe login` before the webhook can be forwarded. Record the results here and in `PROJECT_GUIDANCE.md`.
+
+## Decision record
+
+Fill in one row per answer. The design treats Stage 0 as passed only when items 1–3 are all "yes".
+
+| Date | Item | Answer | Who answered | Evidence (where it's kept) |
+| --- | --- | --- | --- | --- |
+| | 1. Course rights | | | |
+| | 1. Other contributors or templates | | | |
+| | 2. Licence model | | | |
+| | 2. Notices added | | | |
+| | 3. Images replaced | | | |
+| | 4. Invoicing clause in contract | | | |
+| | 5. Stripe test run | | | |

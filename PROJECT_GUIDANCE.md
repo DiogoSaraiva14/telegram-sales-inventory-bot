@@ -71,7 +71,7 @@ The design is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellabl
   - screens linked to an order are kept.
 - **Release safety:** migrations only move forward, with a database backup before each one.
 - **Legal:** invoicing, tax, shipping, withdrawal handling and legal texts stay outside the bot and are each shop's responsibility, stated in the reseller contract. Not legal advice; unverified.
-- **Stage 0 outcome:** not done yet. Code ownership and course rights, the licence and the demo-image rights must be checked before the package is sold. Record here what was checked, with whom, and the result.
+- **Stage 0 outcome:** not done yet. Code ownership and course rights, the licence and the demo-image rights must be checked before the package is sold. The checklist, the facts gathered so far and the decision record are in [docs/stage0_checklist.md](docs/stage0_checklist.md).
 - **End-to-end run (G13):** not done yet. Record the Stripe test-mode results here when it is.
 
 ## Business rules still open
