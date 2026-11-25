@@ -1,4 +1,6 @@
-﻿anyio==4.13.0
+# Generated from requirements.in with a clean venv and pip freeze. Do not edit by hand:
+# see "Updating dependencies" in README.md.
+anyio==4.13.0
 asgiref==3.11.1
 certifi==2026.4.22
 charset-normalizer==3.4.7
@@ -8,8 +10,8 @@ httpcore==1.0.9
 httpx==0.28.1
 idna==3.13
 pillow==12.2.0
-psycopg==3.3.4
 psycopg-binary==3.3.4
+psycopg==3.3.4
 python-dotenv==1.2.2
 python-telegram-bot==22.7
 requests==2.34.2

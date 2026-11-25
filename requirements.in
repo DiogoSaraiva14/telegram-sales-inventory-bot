@@ -1,0 +1,10 @@
+# Packages this project imports directly. requirements.txt is the full pinned set generated
+# from this file; see "Updating dependencies" in README.md. Keep each range within one major
+# version (one minor for Django and httpx, which break more often) so an update is a choice.
+Django>=6.0.4,<6.1
+psycopg[binary]>=3.3.4,<4
+python-telegram-bot>=22.7,<23
+stripe>=15.2.1,<16
+httpx>=0.28.1,<0.29
+pillow>=12.2.0,<13
+python-dotenv>=1.2.2,<2
