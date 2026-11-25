@@ -22,7 +22,7 @@ from django.utils import timezone
 
 from core import services
 from core.models import (
-    Categoria, ConfirmacaoCarrinho, Encomenda, LinhaEncomenda, MovimentoStock, Pagamento, Produto, RegistoAuditoria, Utilizador,
+    Carrinho, Categoria, ConfirmacaoCarrinho, Encomenda, LinhaCarrinho, LinhaEncomenda, MovimentoStock, Pagamento, Produto, RegistoAuditoria, Utilizador,
 )
 from telegram_bot import confirmacao
 from telegram_bot.constants import MENSAGEM_JA_REGISTADA, MENSAGEM_PRAZO_TERMINADO
@@ -1481,3 +1481,194 @@ class CategoriaMigracaoTests(TransactionTestCase):
         por_produto = dict(Produto.objects.values_list("nome", "categoria__nome"))
         self.assertEqual(por_produto, {"Ryzen": "Processadores", "Intel": "Processadores",
                                        "SSD": "Armazenamento", "Monitor": "monitor"})
+
+
+# ── Stage 3: the cart ──────────────────────────────────────────────────────
+
+class CarrinhoTests(TestCase):
+
+    def setUp(self):
+        self.cliente = utilizador_telegram(8001, "Cliente Carrinho")
+        self.produto = criar_produto(stock=3)
+
+    def add(self, produto=None, cliente=None):
+        return services.adicionar_ao_carrinho(cliente or self.cliente, (produto or self.produto).id)
+
+    def carrinho(self, cliente=None):
+        return Carrinho.objects.get(utilizador__telegram_id=str((cliente or self.cliente).id))
+
+    def linhas(self, cliente=None):
+        return services.ver_carrinho(cliente or self.cliente)[0]
+
+    def test_add_stops_at_stock_then_says_why(self):
+        self.assertEqual([self.add() for _ in range(4)],
+                         [("adicionado", 1), ("adicionado", 2), ("adicionado", 3), ("limite_stock", 3)])
+        self.assertEqual(self.carrinho().revisao, 3)
+        self.assertFalse(Encomenda.objects.exists())
+        self.assertEqual(Produto.objects.get(pk=self.produto.pk).stock_atual, 3)  # the cart reserves nothing
+
+    def test_add_limits_per_line_lines_and_availability(self):
+        muito = criar_produto(nome="Muito", stock=500)
+        self.add(muito)
+        LinhaCarrinho.objects.filter(produto=muito).update(quantidade=services.MAX_QUANTIDADE)
+        self.assertEqual(self.add(muito), ("limite_quantidade", 99))
+        for i in range(services.MAX_LINHAS - 1):
+            self.assertEqual(self.add(criar_produto(nome=f"P{i}"))[0], "adicionado")
+        self.assertEqual(self.add(), ("limite_linhas", 0))
+        inativo = criar_produto(nome="Inativo", ativo=False)
+        esgotado = criar_produto(nome="Esgotado", stock=0)
+        self.assertEqual([self.add(inativo)[0], self.add(esgotado)[0]], ["indisponivel", "indisponivel"])
+        self.assertEqual(LinhaCarrinho.objects.count(), services.MAX_LINHAS)
+
+    def test_minus_to_zero_and_remove_delete_the_line(self):
+        self.add()
+        self.add()
+        self.assertEqual(services.alterar_quantidade(self.cliente, self.produto.id, -1), ("adicionado", 1))
+        self.assertEqual(services.alterar_quantidade(self.cliente, self.produto.id, -1), ("removido", 0))
+        self.assertEqual(services.alterar_quantidade(self.cliente, self.produto.id, 1), ("inexistente", 0))
+        self.add()
+        self.assertEqual(services.remover_do_carrinho(self.cliente, self.produto.id), "removido")
+        self.assertEqual(services.remover_do_carrinho(self.cliente, self.produto.id), "inexistente")
+        self.assertEqual(self.linhas(), [])
+
+    def test_flags_and_which_ones_block_checkout(self):
+        caro, sumido, curto = (criar_produto(nome=n, stock=5) for n in ("Caro", "Sumido", "Curto"))
+        for p in (caro, sumido, curto):
+            self.add(p)
+        self.add(curto)
+        Produto.objects.filter(pk=caro.pk).update(preco=Decimal("60.00"))
+        Produto.objects.filter(pk=sumido.pk).update(ativo=False)
+        Produto.objects.filter(pk=curto.pk).update(stock_atual=1)
+        por_nome = {l.nome: l for l in self.linhas()}
+        self.assertEqual((por_nome["Caro"].preco_alterado, por_nome["Caro"].bloqueia), (True, False))
+        self.assertEqual((por_nome["Sumido"].indisponivel, por_nome["Sumido"].bloqueia), (True, True))
+        self.assertEqual((por_nome["Curto"].stock_insuficiente, por_nome["Curto"].bloqueia), (True, True))
+        resultado, problemas, _ = services.preparar_confirmacao_carrinho(self.cliente)
+        self.assertEqual((resultado, sorted(p.tipo for p in problemas)), ("bloqueado", ["inativo", "stock"]))
+        self.assertFalse(ConfirmacaoCarrinho.objects.exists())
+
+    def test_viewing_changes_nothing(self):
+        self.add()
+        envelhecer(Carrinho, self.carrinho().pk, "atualizado_em", days=29)
+        antes = model_to_dict(self.carrinho())
+        linhas, total = services.ver_carrinho(self.cliente)
+        self.assertEqual((len(linhas), total), (1, Decimal("50.00")))
+        self.assertEqual(model_to_dict(self.carrinho()), antes)
+        self.assertEqual(services.ver_carrinho(utilizador_telegram(8999)), ([], Decimal("0.00")))
+        self.assertFalse(Utilizador.objects.filter(telegram_id="8999").exists())
+
+    def test_whole_cart_becomes_one_order_and_only_that_cart_empties(self):
+        outro = criar_produto(nome="RAM", preco=Decimal("19.99"), stock=4)
+        self.add()
+        self.add()
+        self.add(outro)
+        vizinho = utilizador_telegram(8002, "Vizinho")
+        self.add(cliente=vizinho)
+        Produto.objects.filter(pk=outro.pk).update(preco=Decimal("21.00"))
+        resultado, snap, alterados = services.preparar_confirmacao_carrinho(self.cliente)
+        self.assertEqual((resultado, alterados), ("ok", {outro.id}))
+        self.assertEqual((snap.revisao_carrinho, snap.total_centimos), (self.carrinho().revisao, 12100))
+        resultado, encomenda = services.criar_encomenda_de_confirmacao(self.cliente, snap.nonce)
+        self.assertEqual((resultado, encomenda.total), ("criada", Decimal("121.00")))
+        self.assertEqual(encomenda.linhas.count(), 2)
+        self.assertEqual(self.linhas(), [])
+        self.assertEqual(self.carrinho().revisao, snap.revisao_carrinho + 1)
+        self.assertEqual(len(self.linhas(vizinho)), 1)
+
+    def test_cart_changed_after_the_screen_gives_alterado(self):
+        self.add()
+        _, snap, _ = services.preparar_confirmacao_carrinho(self.cliente)
+        self.add()
+        resultado, alteracoes = services.criar_encomenda_de_confirmacao(self.cliente, snap.nonce)
+        self.assertEqual((resultado, [a.tipo for a in alteracoes]), ("alterado", ["carrinho"]))
+        self.assertEqual(contagens(), (0, 0, 0, 0))
+        self.assertEqual(self.linhas()[0].quantidade, 2)
+
+    def test_empty_cart_has_nothing_to_confirm(self):
+        self.assertEqual(services.preparar_confirmacao_carrinho(self.cliente), ("vazio", None, set()))
+
+
+class RepetirEncomendaTests(TestCase):
+
+    def setUp(self):
+        self.cliente = utilizador_telegram(8101, "Repete")
+        self.produto = criar_produto(stock=10)
+
+    def cancelada(self, *linhas, cliente=None):
+        cliente = cliente or self.cliente
+        _, encomenda = services.criar_encomenda_de_confirmacao(cliente, ecra(cliente, *linhas).nonce)
+        Encomenda.objects.filter(pk=encomenda.pk).update(estado="cancelada")
+        return Encomenda.objects.select_related("utilizador").get(pk=encomenda.pk)
+
+    def quantidades(self):
+        return {l.nome: l.quantidade for l in services.ver_carrinho(self.cliente)[0]}
+
+    def test_merges_with_an_existing_line_capped_by_stock(self):
+        encomenda = self.cancelada((self.produto, 4))
+        Produto.objects.filter(pk=self.produto.pk).update(stock_atual=5)
+        services.adicionar_ao_carrinho(self.cliente, self.produto.id)
+        services.adicionar_ao_carrinho(self.cliente, self.produto.id)
+        revisao = Carrinho.objects.get().revisao
+        self.assertEqual(services.repetir_encomenda(self.cliente, encomenda.id), ([], ["SSD 1TB"], []))
+        self.assertEqual(self.quantidades(), {"SSD 1TB": 5})  # 2 + 4 wanted, 5 in stock
+        self.assertEqual(Carrinho.objects.get().revisao, revisao + 1)
+        self.assertFalse(Encomenda.objects.filter(estado="pendente").exists())  # nothing is ordered
+
+    def test_skips_unavailable_products_and_lines_beyond_twenty(self):
+        inativo, esgotado = criar_produto(nome="Inativo"), criar_produto(nome="Esgotado")
+        encomenda = self.cancelada((self.produto, 1), (inativo, 1), (esgotado, 1))
+        Produto.objects.filter(pk=inativo.pk).update(ativo=False)
+        Produto.objects.filter(pk=esgotado.pk).update(stock_atual=0)
+        self.assertEqual(services.repetir_encomenda(self.cliente, encomenda.id),
+                         (["SSD 1TB"], [], ["Inativo", "Esgotado"]))
+        services.remover_do_carrinho(self.cliente, self.produto.id)
+        for i in range(services.MAX_LINHAS):
+            services.adicionar_ao_carrinho(self.cliente, criar_produto(nome=f"P{i}").id)
+        self.assertEqual(services.repetir_encomenda(self.cliente, encomenda.id)[2], ["SSD 1TB", "Inativo", "Esgotado"])
+        self.assertEqual(len(self.quantidades()), services.MAX_LINHAS)
+
+    def test_only_own_cancelled_unpaid_orders_can_be_repeated(self):
+        encomenda = self.cancelada((self.produto, 1))
+        self.assertTrue(async_to_sync(services.pode_repetir)(encomenda, self.cliente.id))
+        self.assertFalse(async_to_sync(services.pode_repetir)(encomenda, 8102))
+        self.assertIsNone(services.repetir_encomenda(utilizador_telegram(8102, "Outro"), encomenda.id))
+        pagamento = Pagamento.objects.create(encomenda=encomenda, metodo="stripe", valor=encomenda.total,
+                                             estado_pagamento="falhado", stripe_session_id="cs_r")
+        self.assertTrue(async_to_sync(services.pode_repetir)(encomenda, self.cliente.id))
+        for estado in ("pago", "reembolsado"):
+            Pagamento.objects.filter(pk=pagamento.pk).update(estado_pagamento=estado)
+            self.assertFalse(async_to_sync(services.pode_repetir)(encomenda, self.cliente.id))
+            self.assertIsNone(services.repetir_encomenda(self.cliente, encomenda.id))
+        Pagamento.objects.all().delete()
+        Encomenda.objects.filter(pk=encomenda.pk).update(estado="pendente")
+        self.assertIsNone(services.repetir_encomenda(self.cliente, encomenda.id))
+        self.assertIsNone(services.repetir_encomenda(self.cliente, 999999))
+
+
+class LimpezaRascunhosTests(TestCase):
+
+    def test_old_unused_screens_and_idle_carts_are_deleted(self):
+        produto = criar_produto(stock=5)
+        clientes = [utilizador_telegram(8200 + i) for i in range(4)]
+        recente, velho, ligado = (ecra(clientes[0], (produto, 1)) for _ in range(3))
+        envelhecer(ConfirmacaoCarrinho, recente.pk, "criada_em", minutes=44)
+        envelhecer(ConfirmacaoCarrinho, velho.pk, "criada_em", minutes=46)
+        services.criar_encomenda_de_confirmacao(clientes[0], ligado.nonce)
+        envelhecer(ConfirmacaoCarrinho, ligado.pk, "criada_em", days=3)
+        for cliente, dias in ((clientes[1], 29), (clientes[2], 31)):
+            services.adicionar_ao_carrinho(cliente, produto.id)
+            envelhecer(Carrinho, Carrinho.objects.get(utilizador__telegram_id=str(cliente.id)).pk,
+                       "atualizado_em", days=dias)
+        self.assertEqual(services.limpar_rascunhos(), (1, 1))
+        self.assertEqual(set(ConfirmacaoCarrinho.objects.values_list("pk", flat=True)), {recente.pk, ligado.pk})
+        self.assertEqual(list(Carrinho.objects.values_list("utilizador__telegram_id", flat=True)), [str(clientes[1].id)])
+        self.assertEqual(LinhaCarrinho.objects.count(), 1)
+
+    def test_the_cron_command_reports_the_deleted_drafts(self):
+        from io import StringIO
+        from django.core.management import call_command
+        snap = ecra(utilizador_telegram(8210), (criar_produto(stock=5), 1))
+        envelhecer(ConfirmacaoCarrinho, snap.pk, "criada_em", hours=1)
+        saida = StringIO()
+        call_command("cancelar_encomendas_abandonadas", "--horas", "1", stdout=saida)
+        self.assertIn("1 ecrã(s) e 0 carrinho(s) apagados", saida.getvalue())

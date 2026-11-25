@@ -12,10 +12,11 @@ from core import services
 from security.sanitization import sanitizar_id, EntradaInvalida
 from telegram_bot import confirmacao
 from telegram_bot.constants import (
-    ESTADO_EMOJI, MENSAGEM_ALTERADO, MENSAGEM_ECRA_EXPIRADO, MENSAGEM_ENCOMENDA_PENDENTE,
-    MENSAGEM_FALHA_REGISTO, MENSAGEM_JA_REGISTADA, MENSAGEM_MENU_EXPIRADO,
+    ESTADO_EMOJI, MENSAGEM_ALTERADO, MENSAGEM_CARRINHO_VAZIO, MENSAGEM_ECRA_EXPIRADO,
+    MENSAGEM_ENCOMENDA_PENDENTE, MENSAGEM_FALHA_REGISTO, MENSAGEM_JA_REGISTADA, MENSAGEM_MENU_EXPIRADO,
     MENSAGEM_PAGAMENTO_A_CONFIRMAR, MENSAGEM_PEDIDO_INVALIDO, MENSAGEM_PRAZO_TERMINADO,
-    ROTULO_ALTERACAO,
+    MENSAGEM_REPETIDA, MENSAGEM_REPETIDA_IGNORADOS, MENSAGEM_REPETIDA_REDUZIDOS,
+    RESULTADO_CARRINHO, ROTULO_ALTERACAO,
 )
 from telegram_bot.ui import md, responder
 from telegram_bot import keyboards as kb
@@ -134,33 +135,7 @@ async def encomenda_detalhe(query, context, data, user_id):
         f"💶 Total: *{encomenda.total:.2f}€*\n"
         f"📅 Data: {encomenda.data_encomenda.strftime('%d/%m/%Y %H:%M')}\n\n"
         f"*Produtos:*\n{produtos_txt}",
-        kb.teclado_voltar_encomendas()
-    )
-
-
-async def encomendar(query, context, data, user_id):
-    """Stage 2 one-product checkout: save the screen as a one-line snapshot, then show it."""
-    try:
-        p = await services.get_produto(sanitizar_id(data.split("_")[1], campo="produto_id"))
-    except (EntradaInvalida, Produto.DoesNotExist, ValueError):
-        await responder(query, context, "❌ Produto não encontrado.",
-                        kb.teclado_voltar_menu(), parse_mode=None)
-        return
-    if p.stock_atual <= 0:
-        await query.answer("❌ Produto sem stock disponível.", show_alert=True)
-        return
-    resultado, snap = await services.criar_confirmacao_async(query.from_user, [(p.id, 1)])
-    if resultado == "bloqueado":  # sold out or deactivated since the product screen was drawn
-        await _mostrar_alterado(query, context, snap, f"produto_{p.id}")
-        return
-    linha = snap.linhas[0]
-    await responder(
-        query, context,
-        f"🛒 *Confirmar Encomenda*\n\n"
-        f"Produto: *{md(linha['nome'], '*')}*\n"
-        f"Preço: *{services._euros(linha['preco_unitario_centimos']):.2f}€*\n\n"
-        f"Desejas confirmar esta encomenda?",
-        kb.teclado_confirmar_encomenda(confirmacao.callback_confirmar(snap.nonce), f"produto_{p.id}")
+        kb.teclado_detalhe_encomenda(encomenda.id, await services.pode_repetir(encomenda, user_id))
     )
 
 
@@ -173,13 +148,121 @@ async def _mostrar(query, context, texto, teclado, parse_mode="Markdown"):
             raise
 
 
-async def _mostrar_alterado(query, context, alteracoes, voltar):
-    """Confirm found a difference: nothing was ordered; list what changed (plain text)."""
-    linhas = [MENSAGEM_ALTERADO, ""]
+def _texto_alteracoes(alteracoes):
+    """What Confirm found changed, as plain text above the cart."""
+    linhas = [MENSAGEM_ALTERADO]
     for a in alteracoes:
         rotulo = ROTULO_ALTERACAO[a.tipo].format(antes=a.antes, depois=a.depois)
-        linhas.append(f"• {a.nome[:60] or 'Produto'}: {rotulo}")
-    await _mostrar(query, context, "\n".join(linhas), kb.teclado_alterado(voltar), parse_mode=None)
+        linhas.append(f"• {rotulo}" if a.tipo == "carrinho" else f"• {a.nome[:60] or 'Produto'}: {rotulo}")
+    return "\n".join(linhas)
+
+
+def _texto_carrinho(linhas, total, aviso=""):
+    partes = [aviso, ""] if aviso else []
+    if not linhas:
+        return "\n".join(partes + [MENSAGEM_CARRINHO_VAZIO])
+    partes.append("🛒 Carrinho\n")
+    for l in linhas:
+        marca = ""
+        if l.indisponivel:
+            marca = " " + ROTULO_ALTERACAO["inativo"]
+        elif l.stock_insuficiente:
+            marca = f" ⚠️ só há {l.stock} em stock"
+        if l.preco_alterado:
+            marca += " " + ROTULO_ALTERACAO["preco"].format(antes=l.preco_ao_adicionar, depois=l.preco)
+        partes.append(f"• {l.quantidade}× {l.nome[:60]} — {l.subtotal:.2f}€{marca}")
+    partes.append(f"\nTotal: {total:.2f}€")
+    return "\n".join(partes)
+
+
+async def _mostrar_carrinho(query, context, aviso=""):
+    """The cart with live prices and flags (plain text, so names need no escaping)."""
+    linhas, total = await services.ver_carrinho_async(query.from_user)
+    await _mostrar(query, context, _texto_carrinho(linhas, total, aviso), kb.teclado_carrinho(linhas), parse_mode=None)
+
+
+def _id_final(data, campo):
+    """The id after the last underscore, or None if it isn't a positive integer."""
+    try:
+        return sanitizar_id(data.rsplit("_", 1)[-1], campo=campo)
+    except EntradaInvalida:
+        return None
+
+
+async def carrinho_ver(query, context, data, user_id):
+    await _mostrar_carrinho(query, context)
+
+
+async def carrinho_add(query, context, data, user_id):
+    """Product screen button (and old encomendar_<id> buttons): add one unit, keep the screen."""
+    produto_id = _id_final(data, "produto_id")
+    if produto_id is None:
+        await query.answer(MENSAGEM_PEDIDO_INVALIDO, show_alert=True)
+        return
+    resultado, quantidade = await services.adicionar_ao_carrinho_async(query.from_user, produto_id)
+    await query.answer(RESULTADO_CARRINHO[resultado].format(quantidade=quantidade),
+                       show_alert=resultado != "adicionado")
+
+
+async def _mudar_linha(query, context, data, mudanca):
+    produto_id = _id_final(data, "produto_id")
+    if produto_id is None:
+        await query.answer(MENSAGEM_PEDIDO_INVALIDO, show_alert=True)
+        return
+    resultado = await mudanca(query.from_user, produto_id)
+    if isinstance(resultado, tuple):  # alterar_quantidade also returns the quantity
+        resultado = resultado[0]
+    if resultado not in ("adicionado", "removido"):  # a limit, or the line is gone: say why
+        await query.answer(RESULTADO_CARRINHO[resultado].format(quantidade=0))
+    await _mostrar_carrinho(query, context)
+
+
+async def carrinho_mais(query, context, data, user_id):
+    await _mudar_linha(query, context, data, lambda u, pid: services.alterar_quantidade_async(u, pid, 1))
+
+
+async def carrinho_menos(query, context, data, user_id):
+    await _mudar_linha(query, context, data, lambda u, pid: services.alterar_quantidade_async(u, pid, -1))
+
+
+async def carrinho_remover(query, context, data, user_id):
+    await _mudar_linha(query, context, data, services.remover_do_carrinho_async)
+
+
+async def carrinho_finalizar(query, context, data, user_id):
+    """Save the whole cart as a confirmation screen and show it."""
+    resultado, snap, precos_alterados = await services.preparar_confirmacao_carrinho_async(query.from_user)
+    if resultado != "ok":  # empty, or a line blocks checkout now: show the cart as it is
+        await _mostrar_carrinho(query, context)
+        return
+    linhas = "\n".join(
+        f"• {l['quantidade']}× {l['nome'][:60]} — "
+        f"{services._euros(l['quantidade'] * l['preco_unitario_centimos']):.2f}€"
+        + (" ⚠️ preço alterado" if l["produto_id"] in precos_alterados else "")
+        for l in snap.linhas
+    )
+    await _mostrar(
+        query, context,
+        f"🛒 Confirmar encomenda\n\n{linhas}\n\n"
+        f"Total: {services._euros(snap.total_centimos):.2f}€\n\nDesejas confirmar esta encomenda?",
+        kb.teclado_confirmar_encomenda(confirmacao.callback_confirmar(snap.nonce)), parse_mode=None,
+    )
+
+
+async def repetir_encomenda(query, context, data, user_id):
+    """Merge a cancelled unpaid order back into the cart; the customer confirms again."""
+    encomenda_id = _id_final(data, "encomenda_id")
+    resultado = None if encomenda_id is None else await services.repetir_encomenda_async(query.from_user, encomenda_id)
+    if resultado is None:
+        await query.answer(MENSAGEM_PEDIDO_INVALIDO, show_alert=True)
+        return
+    _, reduzidos, ignorados = resultado
+    aviso = [MENSAGEM_REPETIDA]
+    if reduzidos:
+        aviso.append(MENSAGEM_REPETIDA_REDUZIDOS.format(nomes=", ".join(n[:60] for n in reduzidos)))
+    if ignorados:
+        aviso.append(MENSAGEM_REPETIDA_IGNORADOS.format(nomes=", ".join(n[:60] for n in ignorados)))
+    await _mostrar_carrinho(query, context, "\n".join(aviso))
 
 
 def _texto_linhas(linhas):
@@ -257,7 +340,7 @@ async def confirmar_encomenda(query, context, data, user_id):
         await query.answer()  # stop the button spinner before Stripe
         await _mostrar_pagamento(query, context, data, valor)
     elif resultado == "alterado":
-        await _mostrar_alterado(query, context, valor, f"produto_{valor[0].produto_id}")
+        await _mostrar_carrinho(query, context, _texto_alteracoes(valor))
     elif resultado == "pendente":
         await _mostrar(query, context, MENSAGEM_ENCOMENDA_PENDENTE.format(id=valor.id),
                        kb.teclado_ver_encomenda(valor.id), parse_mode=None)
@@ -282,12 +365,19 @@ EXACT_ROUTES = {
     "sem_stock": sem_stock,
     "menu_encomendas": menu_encomendas,
     "menu_ajuda": menu_ajuda,
+    "carrinho_ver": carrinho_ver,
+    "carrinho_finalizar": carrinho_finalizar,
 }
 
 PREFIX_ROUTES = (
     ("cat_", categoria),
     ("produto_", produto_detalhe),
     ("ver_encomenda_", encomenda_detalhe),
-    ("encomendar_", encomendar),
+    ("encomendar_", carrinho_add),  # buttons drawn before the cart now add to it
     ("confirmar_encomenda_", confirmar_encomenda),
+    ("carrinho_add_", carrinho_add),
+    ("carrinho_mais_", carrinho_mais),
+    ("carrinho_menos_", carrinho_menos),
+    ("carrinho_remover_", carrinho_remover),
+    ("repetir_encomenda_", repetir_encomenda),
 )

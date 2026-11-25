@@ -5,12 +5,16 @@ from telegram_bot.constants import ESTADO_EMOJI
 from telegram_bot.guards import is_admin
 
 
+_MENU = [InlineKeyboardButton("🔙 Menu Principal", callback_data="menu_inicio")]
+
+
 # ── Navegação ──────────────────────────────────────────────────────────────
 
 def teclado_menu_principal(user_id: int = None):
     buttons = [
         [InlineKeyboardButton("🛍️ Ver Catálogo", callback_data="menu_catalogo")],
-        [InlineKeyboardButton("🛒 As Minhas Encomendas", callback_data="menu_encomendas")],
+        [InlineKeyboardButton("🛒 Carrinho", callback_data="carrinho_ver")],
+        [InlineKeyboardButton("📦 As Minhas Encomendas", callback_data="menu_encomendas")],
         [InlineKeyboardButton("ℹ️ Ajuda", callback_data="menu_ajuda")],
     ]
     if user_id and is_admin(user_id):
@@ -49,12 +53,33 @@ def teclado_produtos_categoria(produtos):
     return InlineKeyboardMarkup(keyboard)
 
 def teclado_produto(produto):
-    encomendar_label = "🛒 Encomendar" if produto.stock_atual > 0 else "❌ Sem Stock"
-    encomendar_data  = f"encomendar_{produto.id}" if produto.stock_atual > 0 else "sem_stock"
+    adicionar_label = "🛒 Adicionar ao carrinho" if produto.stock_atual > 0 else "❌ Sem Stock"
+    adicionar_data  = f"carrinho_add_{produto.id}" if produto.stock_atual > 0 else "sem_stock"
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(encomendar_label, callback_data=encomendar_data)],
+        [InlineKeyboardButton(adicionar_label, callback_data=adicionar_data)],
+        [InlineKeyboardButton("🛒 Ver carrinho", callback_data="carrinho_ver")],
         [InlineKeyboardButton("🔙 Voltar à Categoria", callback_data=f"cat_{produto.categoria_id}")],
     ])
+
+def teclado_carrinho(linhas):
+    """+ / − / 🗑 per line; "Finalizar compra" only when no line blocks checkout."""
+    buttons = [[
+        InlineKeyboardButton(f"➖ {l.nome[:18]}", callback_data=f"carrinho_menos_{l.produto_id}"),
+        InlineKeyboardButton("➕", callback_data=f"carrinho_mais_{l.produto_id}"),
+        InlineKeyboardButton("🗑", callback_data=f"carrinho_remover_{l.produto_id}"),
+    ] for l in linhas]
+    if linhas and not any(l.bloqueia for l in linhas):
+        buttons.append([InlineKeyboardButton("✅ Finalizar compra", callback_data="carrinho_finalizar")])
+    buttons.append([InlineKeyboardButton("🛍️ Continuar a comprar", callback_data="menu_catalogo")])
+    buttons.append(_MENU)
+    return InlineKeyboardMarkup(buttons)
+
+def teclado_detalhe_encomenda(encomenda_id, repetir=False):
+    buttons = []
+    if repetir:
+        buttons.append([InlineKeyboardButton("🔁 Repetir encomenda", callback_data=f"repetir_encomenda_{encomenda_id}")])
+    buttons.append([InlineKeyboardButton("🔙 As Minhas Encomendas", callback_data="menu_encomendas")])
+    return InlineKeyboardMarkup(buttons)
 
 def teclado_minhas_encomendas(encomendas):
     buttons = []
@@ -67,30 +92,22 @@ def teclado_minhas_encomendas(encomendas):
     buttons.append([InlineKeyboardButton("🔙 Menu Principal", callback_data="menu_inicio")])
     return InlineKeyboardMarkup(buttons)
 
-_MENU = [InlineKeyboardButton("🔙 Menu Principal", callback_data="menu_inicio")]
 
-def teclado_confirmar_encomenda(callback_confirmar, voltar):
-    """voltar: the callback that leads back (the product in Stage 2, the cart in Stage 3)."""
+def teclado_confirmar_encomenda(callback_confirmar):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Confirmar", callback_data=callback_confirmar)],
-        [InlineKeyboardButton("❌ Cancelar",  callback_data=voltar)],
+        [InlineKeyboardButton("🔙 Voltar ao carrinho", callback_data="carrinho_ver")],
     ])
 
 def teclado_ecra_expirado():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛍️ Ver Catálogo", callback_data="menu_catalogo")],
+        [InlineKeyboardButton("🛒 Ver carrinho", callback_data="carrinho_ver")],
         _MENU,
     ])
 
 def teclado_ver_encomenda(encomenda_id):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Ver encomenda", callback_data=f"ver_encomenda_{encomenda_id}")],
-        _MENU,
-    ])
-
-def teclado_alterado(voltar):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Voltar", callback_data=voltar)],
         _MENU,
     ])
 

@@ -98,6 +98,40 @@ class Produto(models.Model):
         ordering        = ['nome']
 
 
+# ── Carrinho (cart design, Stage 3) ────────────────────────────────────────
+
+class Carrinho(models.Model):
+    """A customer's draft order. Reserves nothing: stock is taken only at Confirm."""
+    utilizador    = models.OneToOneField(Utilizador, on_delete=models.CASCADE, related_name='carrinho')
+    revisao       = models.IntegerField(default=0)  # +1 on every change; a confirmation screen records it
+    atualizado_em = models.DateTimeField(default=timezone.now)  # last change; viewing doesn't count
+
+    def __str__(self):
+        return f"Carrinho de {self.utilizador}"
+
+    class Meta:
+        db_table        = 'carrinho'
+        verbose_name    = "Carrinho"
+        verbose_name_plural = "Carrinhos"
+
+
+class LinhaCarrinho(models.Model):
+    carrinho           = models.ForeignKey(Carrinho, on_delete=models.CASCADE, related_name='linhas')
+    produto            = models.ForeignKey(Produto, on_delete=models.CASCADE, related_name='+')
+    quantidade         = models.PositiveIntegerField()
+    # Price when the line was added or last changed, to mark later price changes.
+    preco_ao_adicionar = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        db_table        = 'linha_carrinho'
+        verbose_name    = "Linha de Carrinho"
+        verbose_name_plural = "Linhas de Carrinho"
+        constraints     = [
+            models.UniqueConstraint(fields=['carrinho', 'produto'], name='uma_linha_por_produto'),
+            models.CheckConstraint(condition=models.Q(quantidade__gt=0), name='quantidade_positiva'),
+        ]
+
+
 # ── Ecrã de confirmação (cart design, Stage 2) ─────────────────────────────
 
 class ConfirmacaoCarrinho(models.Model):

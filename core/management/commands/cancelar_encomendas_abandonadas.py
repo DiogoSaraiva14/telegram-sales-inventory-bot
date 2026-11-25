@@ -2,7 +2,8 @@
 
 Each one is cancelled with its stock returned (and any open Stripe session expired),
 or confirmed if its stored Stripe session was paid. A Stripe or database error leaves
-the order unchanged for the next run. Run it from cron every 5 minutes:
+the order unchanged for the next run. The same run deletes unused confirmation
+screens after 45 minutes and idle carts after 30 days. Run it from cron every 5 minutes:
     python manage.py cancelar_encomendas_abandonadas --horas 1
 """
 from django.core.management.base import BaseCommand, CommandError
@@ -29,7 +30,8 @@ class Command(BaseCommand):
                 notificar_estado(encomenda, resultado)
             if resultado in contagem:
                 contagem[resultado] += 1
+        ecras, carrinhos = services.limpar_rascunhos()
         self.stdout.write(
             f"Limpeza: {contagem['confirmada']} confirmada(s), {contagem['cancelada']} cancelada(s), "
-            f"{contagem['erro']} erro(s)."
+            f"{contagem['erro']} erro(s); {ecras} ecrã(s) e {carrinhos} carrinho(s) apagados."
         )

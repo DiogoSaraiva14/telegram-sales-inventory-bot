@@ -26,6 +26,7 @@ def pseudonimo(telegram_id) -> str:
 ALLOWED_EXACT = {
     "menu_inicio", "menu_catalogo", "menu_encomendas", "menu_ajuda",
     "sem_stock",
+    "carrinho_ver", "carrinho_finalizar",
     "admin_menu", "admin_produtos", "admin_stock",
     "admin_encomendas", "admin_utilizadores", "admin_auditoria",
 }
@@ -39,6 +40,11 @@ ALLOWED_PREFIXES = (
     "confirmar_encomenda_",
     "cancelar_encomenda_",
     "ver_encomenda_",
+    "carrinho_add_",
+    "carrinho_mais_",
+    "carrinho_menos_",
+    "carrinho_remover_",
+    "repetir_encomenda_",
     # admin
     "admin_produto_detalhe_",
     "admin_produto_toggle_",
