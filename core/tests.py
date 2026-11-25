@@ -22,7 +22,7 @@ from django.utils import timezone
 
 from core import services
 from core.models import (
-    Carrinho, Categoria, ConfirmacaoCarrinho, Encomenda, LinhaCarrinho, LinhaEncomenda, Loja, MovimentoStock, Pagamento, Produto, RegistoAuditoria, Utilizador,
+    Carrinho, Categoria, ConfirmacaoCarrinho, Encomenda, LinhaCarrinho, LinhaEncomenda, Loja, MovimentoStock, Notificacao, Pagamento, Produto, RegistoAuditoria, Utilizador,
 )
 from telegram_bot import confirmacao
 from telegram_bot.constants import MENSAGEM_JA_REGISTADA, MENSAGEM_PRAZO_TERMINADO
@@ -754,7 +754,7 @@ class ExpiracaoPagamentoTests(TestCase):
         self.pagamento = Pagamento.objects.create(
             encomenda=self.encomenda, metodo="stripe", valor=self.encomenda.total,
             estado_pagamento="pendente", stripe_session_id="cs_exp")
-        envio = patch("core.views.httpx.post", return_value=MagicMock(status_code=200))
+        envio = patch("core.notificacoes.httpx.post", return_value=MagicMock(status_code=200))
         self.post = envio.start()
         self.addCleanup(envio.stop)
 
@@ -837,7 +837,7 @@ class ConfirmacaoPagamentoTests(TestCase):
         self.pagamento = Pagamento.objects.create(
             encomenda=self.encomenda, metodo="stripe", valor=self.encomenda.total,
             estado_pagamento="pendente", stripe_session_id="cs_ok")
-        envio = patch("core.views.httpx.post", return_value=MagicMock(status_code=200))
+        envio = patch("core.notificacoes.httpx.post", return_value=MagicMock(status_code=200))
         self.post = envio.start()
         self.addCleanup(envio.stop)
 
@@ -906,7 +906,7 @@ class ConcurrentWebhookTests(TransactionTestCase):
             finally:
                 connection.close()
 
-        with patch("core.views.httpx.post", return_value=MagicMock(status_code=200)) as post, \
+        with patch("core.notificacoes.httpx.post", return_value=MagicMock(status_code=200)) as post, \
              patch.object(RegistoAuditoria.objects, "create", side_effect=auditar):
             a = threading.Thread(target=entregar, name="A", args=("A",))
             b = threading.Thread(target=entregar, name="B", args=("B",))
@@ -942,7 +942,7 @@ class CancelamentoTests(TestCase):
             mocks[nome] = p.start()
             self.addCleanup(p.stop)
         self.retrieve, self.expire, self.refund = mocks["retrieve"], mocks["expire"], mocks["create"]
-        envio = patch("core.views.httpx.post", return_value=MagicMock(status_code=200))
+        envio = patch("core.notificacoes.httpx.post", return_value=MagicMock(status_code=200))
         self.post = envio.start()
         self.addCleanup(envio.stop)
 
@@ -1103,7 +1103,7 @@ class ConcurrentCancellationTests(TransactionTestCase):
                           return_value=SimpleNamespace(status="open", payment_intent="pi_t5")), \
              patch.object(stripe.checkout.Session, "expire", side_effect=expirar), \
              patch.object(stripe.Refund, "create") as refund, \
-             patch("core.views.httpx.post", return_value=MagicMock(status_code=200)) as post:
+             patch("core.notificacoes.httpx.post", return_value=MagicMock(status_code=200)) as post:
             admin = threading.Thread(target=correr, args=("admin", lambda: services.cancelar_encomenda(encomenda.id)))
             webhook = threading.Thread(target=correr, args=("webhook", lambda: _handle_payment_success({"id": "cs_t5"})))
             admin.start()
@@ -1139,7 +1139,7 @@ class AdminInvariantTests(TestCase):
         self.LinhaEncomendaAdmin, self.ProdutoAdmin = LinhaEncomendaAdmin, ProdutoAdmin
         self.produto = criar_produto(stock=5)
         _, self.encomenda = reservar(utilizador_telegram(7020), self.produto.id)
-        envio = patch("core.views.httpx.post", return_value=MagicMock(status_code=200))
+        envio = patch("core.notificacoes.httpx.post", return_value=MagicMock(status_code=200))
         self.post = envio.start()
         self.addCleanup(envio.stop)
 
@@ -1314,7 +1314,7 @@ class EncomendasAbandonadasTests(TestCase):
             self.addCleanup(p.stop)
         self.retrieve, self.expire = mocks["retrieve"], mocks["expire"]
         self.retrieve.return_value = sessao("cs_v", "open")
-        envio = patch("core.views.httpx.post", return_value=MagicMock(status_code=200))
+        envio = patch("core.notificacoes.httpx.post", return_value=MagicMock(status_code=200))
         self.post = envio.start()
         self.addCleanup(envio.stop)
 
@@ -1734,7 +1734,7 @@ class DonoDaLojaTests(TestCase):
         self.produto = criar_produto(stock=5)
         _, self.encomenda = reservar(utilizador_telegram(8301), self.produto.id)
         Encomenda.objects.filter(pk=self.encomenda.pk).update(estado="confirmada")
-        envio = patch("core.views.httpx.post", return_value=MagicMock(status_code=200))
+        envio = patch("core.notificacoes.httpx.post", return_value=MagicMock(status_code=200))
         self.post = envio.start()
         self.addCleanup(envio.stop)
 
@@ -1919,3 +1919,68 @@ class AuditoriaAcoesDjangoTests(TestCase):
              self.assertRaises(DatabaseError):
             self.utilizadores.bloquear_utilizadores(self.pedido, Utilizador.objects.filter(pk=ana.pk))
         self.assertTrue(Utilizador.objects.get(pk=ana.pk).ativo)
+
+
+class FilaNotificacoesTests(TestCase):
+    """Customer messages are queued, sent at once, resent by the cleanup run, and given up after 24 h."""
+
+    def setUp(self):
+        from django.test import override_settings
+        from core import notificacoes
+        self.notificacoes = notificacoes
+        cliente = Utilizador.objects.create(telegram_id="5550001", nome="Fila")
+        self.encomenda = Encomenda.objects.create(utilizador=cliente, estado="enviada", total=Decimal("9.99"))
+        p = override_settings(TELEGRAM_TOKEN="123:teste")
+        p.enable()
+        self.addCleanup(p.disable)
+
+    def enviar(self, *respostas):
+        """Patch Telegram to answer with these status codes (an exception class means a network error)."""
+        efeitos = [r if isinstance(r, type) else MagicMock(status_code=r) for r in respostas]
+        return patch.object(self.notificacoes.httpx, "post", side_effect=efeitos)
+
+    def test_a_delivered_message_is_marked_sent(self):
+        with self.enviar(200) as post:
+            self.assertTrue(self.notificacoes.notificar_estado(self.encomenda, "enviada"))
+        n = Notificacao.objects.get()
+        self.assertEqual((n.estado, n.tentativas, n.chat_id), ("enviada", 1, "5550001"))
+        self.assertIsNotNone(n.enviada_em)
+        self.assertIn("Encomenda #", post.call_args.kwargs["json"]["text"])
+
+    def test_a_temporary_failure_is_resent_by_the_cleanup_run(self):
+        import httpx
+        with self.enviar(httpx.ConnectError, 502, 200):
+            self.assertFalse(self.notificacoes.notificar_estado(self.encomenda, "enviada"))
+            self.assertEqual(self.notificacoes.reenviar_pendentes(), (0, 0))
+            self.assertEqual(self.notificacoes.reenviar_pendentes(), (1, 0))
+        self.assertEqual(Notificacao.objects.values_list("estado", "tentativas").get(), ("enviada", 3))
+        self.assertFalse(RegistoAuditoria.objects.filter(acao="NOTIFICACAO_FALHADA").exists())
+
+    def test_a_blocked_bot_is_given_up_at_once_and_audited(self):
+        with self.enviar(403):
+            self.assertFalse(self.notificacoes.notificar_estado(self.encomenda, "enviada"))
+        self.assertEqual(Notificacao.objects.get().estado, "falhada")
+        registo = RegistoAuditoria.objects.get(acao="NOTIFICACAO_FALHADA")
+        self.assertEqual(registo.descricao, f"#{self.encomenda.id}: Telegram recusou (403); 1 tentativa(s)")
+        with self.enviar() as post:
+            self.assertEqual(self.notificacoes.reenviar_pendentes(), (0, 0))
+        post.assert_not_called()
+
+    def test_a_message_still_failing_after_24_hours_is_given_up(self):
+        with self.enviar(500):
+            self.notificacoes.notificar_estado(self.encomenda, "enviada")
+        Notificacao.objects.update(criada=timezone.now() - timedelta(hours=24, minutes=1))
+        with self.enviar(500):
+            self.assertEqual(self.notificacoes.reenviar_pendentes(), (0, 1))
+        self.assertEqual(Notificacao.objects.get().estado, "falhada")
+        self.assertIn("não entregue em 24 h (Telegram respondeu 500)",
+                      RegistoAuditoria.objects.get(acao="NOTIFICACAO_FALHADA").descricao)
+
+    def test_the_cleanup_command_resends_queued_messages(self):
+        from io import StringIO
+        from django.core.management import call_command
+        with self.enviar(500, 200):
+            self.notificacoes.notificar_estado(self.encomenda, "enviada")
+            saida = StringIO()
+            call_command("cancelar_encomendas_abandonadas", "--horas", "1", stdout=saida)
+        self.assertIn("notificações: 1 reenviada(s), 0 abandonada(s)", saida.getvalue())

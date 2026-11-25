@@ -406,36 +406,36 @@ class AdminCancelHandlerTests(SimpleTestCase):
     async def _cancelar(self, **servico):
         query = MagicMock()
         query.answer = AsyncMock()
-        responder, notificar = AsyncMock(), AsyncMock(return_value=True)
+        responder, notificar = AsyncMock(), MagicMock(return_value=True)
         with patch.object(admin.services, "cancelar_encomenda_db", AsyncMock(**servico)), \
              patch.object(admin.services, "registar_auditoria", AsyncMock()), \
-             patch.object(admin, "responder", responder), patch.object(admin, "notificar_cliente", notificar):
+             patch.object(admin, "responder", responder), patch.object(admin, "notificar_estado", notificar):
             await admin._mudar_estado_e_notificar(query, MagicMock(), 1, 7, "cancelada", "CANCELAR")
         return responder.await_args.args[2], notificar
 
     async def test_refunded_cancel_sends_the_refund_message(self):
         encomenda = SimpleNamespace(id=7, total=Decimal("9.99"), utilizador=SimpleNamespace(nome="Ana"))
         texto, notificar = await self._cancelar(return_value=("reembolsada", encomenda))
-        self.assertEqual(notificar.await_args.args[2], "reembolsada")
+        self.assertEqual(notificar.call_args.args[1], "reembolsada")
         self.assertIn("marcada como *cancelada*", texto)
 
     async def test_payment_just_received_is_not_cancelled(self):
         from core.services import PagamentoRecebido
         texto, notificar = await self._cancelar(side_effect=PagamentoRecebido(7))
         self.assertIn("acabou de pagar", texto)
-        notificar.assert_not_awaited()
+        notificar.assert_not_called()
 
     async def test_stripe_error_changes_nothing(self):
         import stripe
         with self.assertLogs("telegram_bot.handlers.admin", level="ERROR"):
             texto, notificar = await self._cancelar(side_effect=stripe.error.APIConnectionError("sem rede"))
         self.assertIn("Não foi possível contactar a Stripe", texto)
-        notificar.assert_not_awaited()
+        notificar.assert_not_called()
 
     async def test_order_that_cannot_be_cancelled(self):
         texto, notificar = await self._cancelar(return_value=("invalida", None))
         self.assertIn("não encontrada ou estado inválido", texto)
-        notificar.assert_not_awaited()
+        notificar.assert_not_called()
 
 
 class MarkdownEscapingTests(SimpleTestCase):
@@ -490,24 +490,23 @@ class LogPrivacyTests(SimpleTestCase):
         self.assertNotIn("123456789", texto)
         self.assertNotIn("ana_secreta", texto)
 
-    async def test_customer_notification_log_has_no_telegram_id(self):
-        from telegram_bot.notifications import notificar_cliente
-        context = MagicMock()
-        context.bot.send_message = AsyncMock()
-        encomenda = SimpleNamespace(id=7, total=Decimal("9.99"), utilizador=SimpleNamespace(telegram_id="5551234"))
-        with self.assertLogs("telegram_bot.notifications", level="INFO") as logs:
-            self.assertTrue(await notificar_cliente(context, encomenda, "enviada"))
+    def test_customer_notification_log_has_no_telegram_id(self):
+        from django.test import override_settings
+        from core import notificacoes
+        with override_settings(TELEGRAM_TOKEN="123:SEGREDO"), \
+             patch.object(notificacoes.httpx, "post", return_value=MagicMock(status_code=200)), \
+             self.assertLogs("core.notificacoes", level="INFO") as logs:
+            self.assertEqual(notificacoes._enviar_telegram("5551234", "olá", 7)[0], notificacoes.ENVIADA)
         self.assertNotIn("5551234", "\n".join(logs.output))
 
     def test_webhook_notification_error_does_not_log_the_token_url(self):
         from django.test import override_settings
-        from core import views
-        encomenda = SimpleNamespace(id=7, utilizador=SimpleNamespace(telegram_id="5551234"))
+        from core import notificacoes
         erro = RuntimeError("POST https://api.telegram.org/bot123:SEGREDO/sendMessage")
         with override_settings(TELEGRAM_TOKEN="123:SEGREDO"), \
-             patch.object(views.httpx, "post", side_effect=erro), \
-             self.assertLogs("core.views", level="INFO") as logs:
-            views._enviar_telegram(encomenda, "olá")
+             patch.object(notificacoes.httpx, "post", side_effect=erro), \
+             self.assertLogs("core.notificacoes", level="INFO") as logs:
+            self.assertEqual(notificacoes._enviar_telegram("5551234", "olá", 7)[0], notificacoes.TEMPORARIA)
         texto = "\n".join(logs.output)
         self.assertIn("RuntimeError", texto)
         self.assertNotIn("SEGREDO", texto)
@@ -569,12 +568,12 @@ class AdminStatusHandlerTests(SimpleTestCase):
     async def test_refused_step_reports_invalid_state(self):
         query = MagicMock()
         query.answer = AsyncMock()
-        responder, notificar = AsyncMock(), AsyncMock()
+        responder, notificar = AsyncMock(), MagicMock()
         with patch.object(admin.services, "atualizar_estado_encomenda", AsyncMock(return_value=None)), \
-             patch.object(admin, "responder", responder), patch.object(admin, "notificar_cliente", notificar):
+             patch.object(admin, "responder", responder), patch.object(admin, "notificar_estado", notificar):
             await admin._mudar_estado_e_notificar(query, MagicMock(), 1, 5, "enviada", "ENVIAR")
         self.assertIn("não encontrada ou estado inválido", responder.await_args.args[2])
-        notificar.assert_not_awaited()
+        notificar.assert_not_called()
 
 
 class LogRetentionTests(SimpleTestCase):

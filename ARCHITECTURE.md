@@ -31,8 +31,8 @@ Staff can also mutate products, stock, orders, payments, and audit data through 
 - telegram_bot/handlers/customer.py and admin.py: one function per screen, plus EXACT_ROUTES/PREFIX_ROUTES tables that map callback values to those functions.
 - telegram_bot/keyboards.py, ui.py, constants.py: inline keyboards, the shared `responder` reply helper, and labels/message templates.
 - telegram_bot/guards.py: session timeout and blocked-account decorators.
-- telegram_bot/notifications.py: order-status notifications sent through the running bot.
 - telegram_bot/tests.py: mock-only tests for routing, the admin gate, and the checkout and cart screens.
+- core/notificacoes.py: customer order messages. Each is saved in `Notificacao`, sent at once through the Bot API, and resent by the cleanup run for 24 hours. A message Telegram refuses (400, 403) or that is still undelivered after 24 hours is given up with a `NOTIFICACAO_FALHADA` audit row.
 - core/services.py: ORM operations used by the bot, the webhook and both admin surfaces. The main ones:
   - Telegram admin check `e_admin`: the bootstrap ids from `ADMIN_TELEGRAM_IDS`, or `Utilizador.e_admin`, read on every call.
   - Cart services, each locking the cart row.
@@ -104,7 +104,7 @@ PostgreSQL stores the shop settings, users, categories and products, carts, conf
 - Bot checkout and admin order and stock changes are transactional in core/services.py (SEC-06, SEC-10).
 - Make order creation, stock reservation, payment-session persistence, and cancellation atomic or explicitly compensating.
 - Represent payment and order state transitions in one place; both admin interfaces should call the same operations.
-- Webhook state changes are idempotent under row locks (SEC-05); notification delivery still has no retry.
+- Webhook state changes are idempotent under row locks (SEC-05). Customer messages are queued just after the order change commits and retried for 24 hours; a crash between that commit and the queue write still loses the message.
 - Split Telegram presentation from domain services so callbacks can be tested without Telegram or PostgreSQL.
 - Select one deployment model and document how the polling bot, Django server, Stripe webhook, PostgreSQL, media storage, and worker/notification retries run together.
 

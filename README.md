@@ -75,7 +75,6 @@ telegram_bot/
   constants.py             state emoji, message templates
   keyboards.py             inline keyboard builders
   ui.py                    responder() reply helper
-  notifications.py         order-status messages to customers
   handlers/commands.py     /start, /admin
   handlers/callbacks.py    callback validation, routing, admin gate
   handlers/customer.py     catalog, product, orders, checkout, help

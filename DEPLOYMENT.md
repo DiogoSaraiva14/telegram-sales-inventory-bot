@@ -125,7 +125,8 @@ Each run:
   - a Stripe or database error: the order is left as it is and retried on the next run;
 - deletes confirmation screens that never became an order, after 45 minutes;
 - deletes carts with no change for 30 days;
-- prints one summary line: confirmed, cancelled, errors, and the screens and carts deleted.
+- resends customer messages that Telegram didn't accept yet. After 24 hours, or at once if Telegram refuses the chat (the customer blocked the bot), a message is given up and a "Notificação falhada" row is added to the audit log;
+- prints one summary line: confirmed, cancelled, errors, the screens and carts deleted, and the messages resent and given up.
 
 **Setup check:** run the command once by hand, then confirm that a second summary line appears in `logs/limpeza.log` within 5 minutes.
 
