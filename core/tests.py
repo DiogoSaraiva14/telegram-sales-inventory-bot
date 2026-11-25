@@ -1881,3 +1881,41 @@ class AcoesAdminTransacionaisTests(TestCase):
         Utilizador.objects.filter(pk=self.cliente.pk).update(e_admin=True)
         services.alternar_utilizador_ativo("901", 900)
         self.assertTrue(Utilizador.objects.get(pk=self.cliente.pk).e_admin)  # blocking keeps other fields
+
+
+class AuditoriaAcoesDjangoTests(TestCase):
+    """Django admin bulk block/activate: one audit row per changed row, written with the change."""
+
+    def setUp(self):
+        from django.contrib.admin.sites import AdminSite
+        from core.admin import ProdutoAdmin, UtilizadorAdmin
+        self.pedido = SimpleNamespace(user="dono")
+        self.produtos = ProdutoAdmin(Produto, AdminSite())
+        self.utilizadores = UtilizadorAdmin(Utilizador, AdminSite())
+
+    def registos(self):
+        return list(RegistoAuditoria.objects.order_by("id").values_list("acao", "entidade", "descricao", "utilizador"))
+
+    def test_only_changed_rows_are_audited_with_the_django_user(self):
+        ativo = criar_produto(nome="Ativo")
+        inativo = criar_produto(nome="Inativo", ativo=False)
+        with patch.object(self.produtos, "message_user") as mensagem:
+            self.produtos.desativar_produtos(self.pedido, Produto.objects.filter(pk__in=[ativo.pk, inativo.pk]))
+        self.assertEqual(self.registos(), [("DESATIVAR_PRODUTO", "Produto", f"Ativo (id={ativo.pk}) (Django admin: dono)", None)])
+        self.assertIn("1 produto(s)", mensagem.call_args.args[1])
+
+    def test_blocking_and_unblocking_customers_is_audited(self):
+        ana = Utilizador.objects.create(telegram_id="701", nome="Ana")
+        with patch.object(self.utilizadores, "message_user"):
+            self.utilizadores.bloquear_utilizadores(self.pedido, Utilizador.objects.filter(pk=ana.pk))
+            self.utilizadores.desbloquear_utilizadores(self.pedido, Utilizador.objects.filter(pk=ana.pk))
+        self.assertEqual([r[0] for r in self.registos()], ["BLOQUEAR_UTILIZADOR", "DESBLOQUEAR_UTILIZADOR"])
+        self.assertEqual(self.registos()[0][2], "Ana (telegram_id=701) (Django admin: dono)")
+        self.assertTrue(Utilizador.objects.get(pk=ana.pk).ativo)
+
+    def test_a_failed_audit_leaves_the_rows_unchanged(self):
+        ana = Utilizador.objects.create(telegram_id="702", nome="Ana")
+        with patch.object(RegistoAuditoria.objects, "bulk_create", side_effect=DatabaseError("falhou")), \
+             self.assertRaises(DatabaseError):
+            self.utilizadores.bloquear_utilizadores(self.pedido, Utilizador.objects.filter(pk=ana.pk))
+        self.assertTrue(Utilizador.objects.get(pk=ana.pk).ativo)

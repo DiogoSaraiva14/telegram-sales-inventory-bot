@@ -13,6 +13,32 @@ from .models import (
 )  # ← parêntese de fecho em falta no original — BUG #1
 
 
+def _definir_ativo(request, queryset, ativo, acao, descrever):
+    """Bulk activate/deactivate: one audit row per row that actually changes, in the same transaction.
+
+    Rows are locked in one query ordered by id, as in checkout (no deadlocks). Returns how many changed.
+    """
+    modelo = queryset.model
+    with transaction.atomic():
+        alvos = [o for o in modelo.objects.select_for_update().filter(pk__in=queryset.values('pk')).order_by('pk')
+                 if o.ativo != ativo]
+        modelo.objects.filter(pk__in=[o.pk for o in alvos]).update(ativo=ativo)
+        RegistoAuditoria.objects.bulk_create([
+            RegistoAuditoria(acao=acao, entidade=modelo.__name__,
+                             descricao=f"{descrever(o)} (Django admin: {request.user})")
+            for o in alvos
+        ])
+    return len(alvos)
+
+
+def _descrever_utilizador(u):
+    return f"{u.nome} (telegram_id={u.telegram_id})"
+
+
+def _descrever_produto(p):
+    return f"{p.nome} (id={p.pk})"
+
+
 @admin.register(Utilizador)
 class UtilizadorAdmin(admin.ModelAdmin):
     list_display = ['nome', 'telegram_id', 'username', 'data_registo', 'estado_badge', 'e_admin', 'motivo_bloqueio']
@@ -34,12 +60,12 @@ class UtilizadorAdmin(admin.ModelAdmin):
 
     @admin.action(description='🚫 Bloquear utilizadores selecionados')
     def bloquear_utilizadores(self, request, queryset):
-        atualizados = queryset.update(ativo=False)
+        atualizados = _definir_ativo(request, queryset, False, 'BLOQUEAR_UTILIZADOR', _descrever_utilizador)
         self.message_user(request, f"{atualizados} utilizador(es) bloqueado(s).", messages.WARNING)
 
     @admin.action(description='✅ Desbloquear utilizadores selecionados')
     def desbloquear_utilizadores(self, request, queryset):
-        atualizados = queryset.update(ativo=True)
+        atualizados = _definir_ativo(request, queryset, True, 'DESBLOQUEAR_UTILIZADOR', _descrever_utilizador)
         self.message_user(request, f"{atualizados} utilizador(es) desbloqueado(s).", messages.SUCCESS)
 
 
@@ -95,7 +121,7 @@ class ProdutoAdmin(admin.ModelAdmin):
 
     @admin.action(description='✅ Ativar produtos selecionados')
     def ativar_produtos(self, request, queryset):
-        atualizados = self._definir_ativo(queryset, True)
+        atualizados = _definir_ativo(request, queryset, True, 'ATIVAR_PRODUTO', _descrever_produto)
         self.message_user(request, f"{atualizados} produto(s) ativado(s).", messages.SUCCESS)
 
     def save_model(self, request, obj, form, change):
@@ -114,17 +140,9 @@ class ProdutoAdmin(admin.ModelAdmin):
                 descricao=f'{obj.nome}: delta={delta}, novo stock={obj.stock_atual} (Django admin: {request.user})',
             )
 
-    @staticmethod
-    def _definir_ativo(queryset, ativo):
-        # Products are always locked in one query ordered by id, as in checkout (no deadlocks).
-        with transaction.atomic():
-            ids = list(Produto.objects.select_for_update().filter(pk__in=queryset.values('pk'))
-                       .order_by('pk').values_list('pk', flat=True))
-            return Produto.objects.filter(pk__in=ids).update(ativo=ativo)
-
     @admin.action(description='❌ Desativar produtos selecionados')
     def desativar_produtos(self, request, queryset):
-        atualizados = self._definir_ativo(queryset, False)
+        atualizados = _definir_ativo(request, queryset, False, 'DESATIVAR_PRODUTO', _descrever_produto)
         self.message_user(request, f"{atualizados} produto(s) desativado(s).", messages.WARNING)
 
 
