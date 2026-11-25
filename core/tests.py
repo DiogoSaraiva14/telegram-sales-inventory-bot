@@ -1259,3 +1259,16 @@ class EncomendasAbandonadasTests(TestCase):
         from django.core.management import call_command
         call_command("cancelar_encomendas_abandonadas", "--horas", "1", stdout=MagicMock())
         self.assertEqual((self.estado("velha"), self.estado("recente")), ("cancelada", "cancelada"))
+
+
+class CancelarAbandonadasArgumentosTests(TestCase):
+    """--horas below 1 would move the cutoff to now or later and cancel orders still being paid."""
+
+    def test_zero_or_negative_hours_are_rejected_before_any_change(self):
+        from django.core.management import CommandError, call_command
+        produto = criar_produto(stock=5)
+        _, encomenda = services.reservar_encomenda(utilizador_telegram(7040), produto.id, nova_chave())
+        for horas in ("0", "-1"):
+            with self.assertRaisesMessage(CommandError, "--horas"):
+                call_command("cancelar_encomendas_abandonadas", "--horas", horas, stdout=MagicMock())
+        self.assertEqual(Encomenda.objects.get(pk=encomenda.pk).estado, "pendente")

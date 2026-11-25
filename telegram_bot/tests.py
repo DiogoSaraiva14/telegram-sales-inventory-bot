@@ -28,6 +28,7 @@ class StartupConfigTests(SimpleTestCase):
                          ["STRIPE_SECRET_KEY", "STRIPE_SUCCESS_URL", "STRIPE_CANCEL_URL"])
         completo = {nome: "x" for nome in app.VARIAVEIS_OBRIGATORIAS}
         self.assertEqual(app.variaveis_em_falta(completo), [])
+        self.assertEqual(app.variaveis_em_falta({**completo, "TELEGRAM_TOKEN": "   "}), ["TELEGRAM_TOKEN"])
         with patch.object(app, "variaveis_em_falta", return_value=["TELEGRAM_TOKEN"]), \
              self.assertRaisesMessage(SystemExit, "TELEGRAM_TOKEN"):
             app.main()
@@ -626,3 +627,18 @@ class LogRetentionTests(SimpleTestCase):
             raiz.handlers[:] = antes[0]
             raiz.setLevel(antes[1])
             httpx_log.setLevel(antes[2])
+
+
+class AdminUserToggleTests(SimpleTestCase):
+    """The block/unblock reply is plain text, so the name is shown exactly as stored."""
+
+    async def test_name_with_markdown_characters_is_shown_as_is(self):
+        responder = AsyncMock()
+        utilizador = SimpleNamespace(nome="Ana *Silva*_x")
+        with patch.object(admin.services, "toggle_utilizador_ativo", AsyncMock(return_value=(utilizador, False))), \
+             patch.object(admin.services, "registar_auditoria", AsyncMock()), \
+             patch.object(admin, "responder", responder):
+            await admin.utilizador_toggle(MagicMock(), MagicMock(), "admin_utilizador_123", 1)
+        texto = responder.await_args.args[2]
+        self.assertTrue(texto.startswith("👤 Ana *Silva*_x\n"))
+        self.assertIsNone(responder.await_args.kwargs["parse_mode"])
