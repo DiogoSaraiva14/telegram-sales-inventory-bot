@@ -75,7 +75,7 @@ class CallbackAnswerTests(SimpleTestCase):
         query.data = data
         update = MagicMock(callback_query=query)
         raw = inspect.unwrap(callbacks.callback_handler)  # skip rate/session/block decorators
-        with patch.object(callbacks, "is_admin", return_value=admin_user),              patch.object(callbacks, "encontrar_rota", return_value=route):
+        with patch.object(callbacks.services, "e_admin", AsyncMock(return_value=admin_user)),              patch.object(callbacks, "encontrar_rota", return_value=route):
             await raw(update, MagicMock())
         return query
 
@@ -457,7 +457,10 @@ class MarkdownEscapingTests(SimpleTestCase):
         update = MagicMock()
         update.message.reply_text = AsyncMock()
         utilizador = SimpleNamespace(nome="Ana*_[x](y)")
-        with patch.object(commands, "get_or_create_utilizador", AsyncMock(return_value=(utilizador, False))):
+        loja = SimpleNamespace(nome="Loja", texto_boas_vindas="Olá")
+        with patch.object(commands.services, "get_or_create_utilizador", AsyncMock(return_value=(utilizador, False))), \
+             patch.object(commands.services, "obter_loja_async", AsyncMock(return_value=loja)), \
+             patch.object(commands.services, "e_admin", AsyncMock(return_value=False)):
             await inspect.unwrap(commands.start)(update, MagicMock())
         texto = update.message.reply_text.await_args.args[0]
         self.assertTrue(texto.startswith("Olá, *Ana*\\**_[x](y)*! "))
@@ -798,9 +801,46 @@ class CarrinhoHandlerTests(SimpleTestCase):
             self.assertEqual(encontrar_rota(data), (handler, False), data)
 
     def test_main_menu_and_product_screen_lead_to_the_cart(self):
-        with patch.object(keyboards, "is_admin", return_value=False):
-            menu = [d for _, d in _botoes(keyboards.teclado_menu_principal(99))]
+        menu = [d for _, d in _botoes(keyboards.teclado_menu_principal())]
         self.assertIn("carrinho_ver", menu)
         produto = SimpleNamespace(id=7, stock_atual=1, categoria_id=1)
         self.assertEqual([d for _, d in _botoes(keyboards.teclado_produto(produto))],
                          ["carrinho_add_7", "carrinho_ver", "cat_1"])
+
+
+class LojaHandlerTests(SimpleTestCase):
+    """Stage 4: the shop's own name and welcome text, and the admin menu from the database flag."""
+
+    async def test_start_shows_the_shop_name_and_welcome_text_escaped(self):
+        from telegram_bot.handlers import commands
+        update = MagicMock()
+        update.message.reply_text = AsyncMock()
+        loja = SimpleNamespace(nome="Loja *Top*", texto_boas_vindas="Promo_de [verão]")
+        with patch.object(commands.services, "get_or_create_utilizador",
+                          AsyncMock(return_value=(SimpleNamespace(nome="Ana"), True))), \
+             patch.object(commands.services, "obter_loja_async", AsyncMock(return_value=loja)), \
+             patch.object(commands.services, "e_admin", AsyncMock(return_value=True)):
+            await inspect.unwrap(commands.start)(update, MagicMock())
+        args, kwargs = update.message.reply_text.await_args
+        self.assertEqual(args[0], "Olá, *Ana*! Bem-vindo! 👋\n\n*Loja *\\**Top*\\***\nPromo\\_de \\[verão]")
+        self.assertIn(("🔐 Painel Admin", "admin_menu"), _botoes(kwargs["reply_markup"]))
+
+    async def test_admin_command_uses_the_database_check_and_shop_name(self):
+        from telegram_bot.handlers import commands
+        update = MagicMock()
+        update.message.reply_text = AsyncMock()
+        update.effective_user.id = 42
+        loja = SimpleNamespace(nome="Jarvis PCs", texto_boas_vindas="")
+        with patch.object(commands.services, "e_admin", AsyncMock(return_value=False)) as e_admin:
+            await inspect.unwrap(commands.admin_command)(update, MagicMock())
+        e_admin.assert_awaited_once_with(42)
+        update.message.reply_text.assert_awaited_once_with("⛔ Acesso negado.")
+        update.message.reply_text.reset_mock()
+        with patch.object(commands.services, "e_admin", AsyncMock(return_value=True)), \
+             patch.object(commands.services, "obter_loja_async", AsyncMock(return_value=loja)):
+            await inspect.unwrap(commands.admin_command)(update, MagicMock())
+        self.assertTrue(update.message.reply_text.await_args.args[0].startswith("🔐 *Painel Admin — Jarvis PCs*"))
+
+    def test_main_menu_shows_the_admin_button_only_for_admins(self):
+        self.assertNotIn("admin_menu", [d for _, d in _botoes(keyboards.teclado_menu_principal(False))])
+        self.assertIn("admin_menu", [d for _, d in _botoes(keyboards.teclado_menu_principal(True))])

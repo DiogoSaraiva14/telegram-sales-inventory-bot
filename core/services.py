@@ -10,6 +10,7 @@ in one query ordered by id (`_bloquear_produtos`).
 """
 import hashlib
 import logging
+import os
 import secrets
 from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -23,7 +24,7 @@ from django.db.models import F
 from django.utils import timezone
 
 from core.models import (
-    Utilizador, Categoria, Carrinho, ConfirmacaoCarrinho, LinhaCarrinho, Produto, Encomenda, LinhaEncomenda,
+    Utilizador, Categoria, Carrinho, Loja, ConfirmacaoCarrinho, LinhaCarrinho, Produto, Encomenda, LinhaEncomenda,
     MovimentoStock, RegistoAuditoria, Pagamento,
 )
 from security.sanitization import validar_telegram_id, sanitizar_nome_utilizador
@@ -59,6 +60,25 @@ async def utilizador_bloqueado(user_id: int) -> bool:
         return not u.ativo
     except Utilizador.DoesNotExist:
         return False
+
+# Bootstrap Telegram admins from .env (cart design, Stage 4). After handover this holds only
+# the reseller's id, or nothing; everyone else is an admin through Utilizador.e_admin.
+ADMINS_ARRANQUE = frozenset(
+    int(x.strip()) for x in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",") if x.strip().isdigit()
+)
+
+async def e_admin(user_id) -> bool:
+    """Telegram admin check, read from the database on every call so changes apply at once."""
+    if int(user_id) in ADMINS_ARRANQUE:
+        return True
+    return await Utilizador.objects.filter(telegram_id=str(user_id), e_admin=True, ativo=True).aexists()
+
+def obter_loja():
+    """The shop settings row, created with neutral defaults on an empty database."""
+    return Loja.objects.get_or_create(pk=1)[0]
+
+async def obter_loja_async():
+    return await sync_to_async(obter_loja)()
 
 async def get_todos_utilizadores():
     return await sync_to_async(list)(Utilizador.objects.all().order_by('nome'))

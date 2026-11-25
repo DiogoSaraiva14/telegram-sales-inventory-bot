@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 async def menu_inicio(query, context, data, user_id):
     await responder(query, context, "O que pretendes fazer?",
-                    kb.teclado_menu_principal(user_id), parse_mode=None)
+                    kb.teclado_menu_principal(await services.e_admin(user_id)), parse_mode=None)
 
 
 async def menu_catalogo(query, context, data, user_id):

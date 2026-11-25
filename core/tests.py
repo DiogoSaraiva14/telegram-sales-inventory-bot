@@ -22,7 +22,7 @@ from django.utils import timezone
 
 from core import services
 from core.models import (
-    Carrinho, Categoria, ConfirmacaoCarrinho, Encomenda, LinhaCarrinho, LinhaEncomenda, MovimentoStock, Pagamento, Produto, RegistoAuditoria, Utilizador,
+    Carrinho, Categoria, ConfirmacaoCarrinho, Encomenda, LinhaCarrinho, LinhaEncomenda, Loja, MovimentoStock, Pagamento, Produto, RegistoAuditoria, Utilizador,
 )
 from telegram_bot import confirmacao
 from telegram_bot.constants import MENSAGEM_JA_REGISTADA, MENSAGEM_PRAZO_TERMINADO
@@ -1672,3 +1672,136 @@ class LimpezaRascunhosTests(TestCase):
         saida = StringIO()
         call_command("cancelar_encomendas_abandonadas", "--horas", "1", stdout=saida)
         self.assertIn("1 ecrã(s) e 0 carrinho(s) apagados", saida.getvalue())
+
+
+# ── Stage 4: shop settings, admin rights and owner permissions ─────────────
+
+class LojaTests(TestCase):
+
+    def test_settings_row_has_neutral_defaults_and_stays_single(self):
+        loja = services.obter_loja()
+        self.assertEqual((loja.pk, loja.nome), (1, "Loja"))
+        self.assertTrue(loja.texto_boas_vindas)
+        Loja(nome="Outra").save()
+        self.assertEqual(list(Loja.objects.values_list("pk", "nome")), [(1, "Outra")])
+
+    def test_django_admin_list_opens_the_single_row_with_no_add_or_delete(self):
+        from django.contrib import admin as django_admin
+        from django.test import RequestFactory
+        from core.admin import LojaAdmin
+        modelo = LojaAdmin(Loja, django_admin.site)
+        pedido = RequestFactory().get("/admin/core/loja/")
+        self.assertFalse(modelo.has_add_permission(pedido))
+        self.assertFalse(modelo.has_delete_permission(pedido))
+        resposta = modelo.changelist_view(pedido)
+        self.assertEqual((resposta.status_code, resposta.url), (302, "/admin/core/loja/1/change/"))
+
+
+class AdminTelegramTests(TestCase):
+
+    def admin(self, user_id):
+        return async_to_sync(services.e_admin)(user_id)
+
+    def test_bootstrap_list_and_database_flag_both_grant_rights_at_once(self):
+        with patch.object(services, "ADMINS_ARRANQUE", frozenset({111})):
+            self.assertTrue(self.admin(111))
+            self.assertFalse(self.admin(222))
+            utilizador = Utilizador.objects.create(telegram_id="222", nome="Dono", e_admin=True)
+            self.assertTrue(self.admin(222))
+            Utilizador.objects.filter(pk=utilizador.pk).update(e_admin=False)
+            self.assertFalse(self.admin(222))  # the next check sees the change, no restart
+            Utilizador.objects.filter(pk=utilizador.pk).update(e_admin=True, ativo=False)
+            self.assertFalse(self.admin(222))  # a blocked user is not an admin
+
+    def test_only_a_superuser_can_change_the_admin_flag(self):
+        from django.contrib import admin as django_admin
+        from core.admin import UtilizadorAdmin
+        modelo = UtilizadorAdmin(Utilizador, django_admin.site)
+        staff = SimpleNamespace(user=SimpleNamespace(is_superuser=False))
+        superuser = SimpleNamespace(user=SimpleNamespace(is_superuser=True))
+        self.assertIn("e_admin", modelo.get_readonly_fields(staff))
+        self.assertNotIn("e_admin", modelo.get_readonly_fields(superuser))
+
+
+@override_settings(TELEGRAM_TOKEN="test-token", **URLS_A)
+class DonoDaLojaTests(TestCase):
+    """The owner's Django account: catalogue yes, order actions no, enforced on the server."""
+
+    def setUp(self):
+        from django.contrib.auth.models import Group, User
+        self.grupo = Group.objects.get(name="Dono da loja")
+        self.dono = User.objects.create_user("dono", password="x", is_staff=True)
+        self.dono.groups.add(self.grupo)
+        self.produto = criar_produto(stock=5)
+        _, self.encomenda = reservar(utilizador_telegram(8301), self.produto.id)
+        Encomenda.objects.filter(pk=self.encomenda.pk).update(estado="confirmada")
+        envio = patch("core.views.httpx.post", return_value=MagicMock(status_code=200))
+        self.post = envio.start()
+        self.addCleanup(envio.stop)
+
+    def test_group_has_exactly_the_listed_permissions(self):
+        self.assertEqual(sorted(self.grupo.permissions.values_list("codename", flat=True)), sorted([
+            "add_produto", "change_produto", "view_produto",
+            "add_categoria", "change_categoria", "view_categoria",
+            "change_loja", "view_loja",
+            "view_encomenda", "view_linhaencomenda", "view_pagamento",
+        ]))
+
+    def test_a8_owner_cannot_post_order_actions(self):
+        self.client.force_login(self.dono)
+        url = "/admin/core/encomenda/"
+        self.assertEqual(self.client.get(url).status_code, 200)  # can read orders
+        for acao in ("marcar_cancelada", "marcar_enviada", "marcar_entregue"):
+            self.client.post(url, {"action": acao, "_selected_action": [self.encomenda.pk]})
+        self.assertEqual(Encomenda.objects.get(pk=self.encomenda.pk).estado, "confirmada")
+        self.assertEqual(Produto.objects.get(pk=self.produto.pk).stock_atual, 4)
+        self.assertFalse(RegistoAuditoria.objects.filter(acao__in=["CANCELAR_ENCOMENDA", "ENCOMENDA_ENVIADA"]).exists())
+        self.post.assert_not_called()
+        # Control: the same post from the reseller's superuser does run the action.
+        from django.contrib.auth.models import User
+        self.client.force_login(User.objects.create_superuser("revendedor", password="x"))
+        self.client.post(url, {"action": "marcar_enviada", "_selected_action": [self.encomenda.pk]})
+        self.assertEqual(Encomenda.objects.get(pk=self.encomenda.pk).estado, "enviada")
+
+    def test_actions_are_listed_by_permission(self):
+        from django.contrib import admin as django_admin
+        from django.contrib.auth.models import User
+        from django.test import RequestFactory
+        from core.admin import EncomendaAdmin
+        modelo = EncomendaAdmin(Encomenda, django_admin.site)
+        pedido = RequestFactory().get("/admin/core/encomenda/")
+        pedido.user = self.dono
+        self.assertFalse({"marcar_cancelada", "marcar_enviada", "marcar_entregue"} & set(modelo.get_actions(pedido)))
+        pedido.user = User.objects.create_superuser("revendedor", password="x")
+        self.assertTrue({"marcar_cancelada", "marcar_enviada", "marcar_entregue"} <= set(modelo.get_actions(pedido)))
+
+    def test_owner_can_add_a_category_but_not_delete_it(self):
+        self.client.force_login(self.dono)
+        resposta = self.client.post("/admin/core/categoria/add/", {"nome": "Monitores", "ordem": 5, "ativo": "on"})
+        self.assertEqual(resposta.status_code, 302)
+        categoria = Categoria.objects.get(nome="Monitores")
+        self.assertEqual(self.client.post(f"/admin/core/categoria/{categoria.pk}/delete/", {"post": "yes"}).status_code, 403)
+        self.assertTrue(Categoria.objects.filter(pk=categoria.pk).exists())
+
+
+class DefinicoesHttpsTests(TestCase):
+
+    def ler(self, **ambiente):
+        import os
+        import runpy
+        from pathlib import Path
+        with patch.dict(os.environ, ambiente):
+            return runpy.run_path(str(Path(__file__).resolve().parent.parent / "config" / "settings.py"))
+
+    def test_https_settings_switch_on_together(self):
+        ligado = self.ler(DJANGO_HTTPS="True", DJANGO_BEHIND_PROXY="True",
+                          CSRF_TRUSTED_ORIGINS="https://loja.example, https://www.loja.example")
+        self.assertTrue(ligado["SECURE_SSL_REDIRECT"] and ligado["SESSION_COOKIE_SECURE"] and ligado["CSRF_COOKIE_SECURE"])
+        self.assertEqual(ligado["SECURE_HSTS_SECONDS"], 31536000)
+        self.assertEqual(ligado["SECURE_PROXY_SSL_HEADER"], ("HTTP_X_FORWARDED_PROTO", "https"))
+        self.assertEqual(ligado["CSRF_TRUSTED_ORIGINS"], ["https://loja.example", "https://www.loja.example"])
+        sem_proxy = self.ler(DJANGO_HTTPS="True", DJANGO_BEHIND_PROXY="False")
+        self.assertNotIn("SECURE_PROXY_SSL_HEADER", sem_proxy)
+        desligado = self.ler(DJANGO_HTTPS="False", CSRF_TRUSTED_ORIGINS="")
+        self.assertNotIn("SECURE_SSL_REDIRECT", desligado)
+        self.assertEqual(desligado["CSRF_TRUSTED_ORIGINS"], [])

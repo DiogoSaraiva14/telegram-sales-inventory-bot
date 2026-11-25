@@ -3,22 +3,28 @@ from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 from django.contrib import messages
 from django.db import transaction
+from django.shortcuts import redirect
 import stripe
 from . import services
 from .views import notificar_estado
 from .models import (
-    Utilizador, Categoria, Produto, Encomenda,
+    Utilizador, Categoria, Loja, Produto, Encomenda,
     LinhaEncomenda, Pagamento, MovimentoStock, RegistoAuditoria
 )  # ← parêntese de fecho em falta no original — BUG #1
 
 
 @admin.register(Utilizador)
 class UtilizadorAdmin(admin.ModelAdmin):
-    list_display = ['nome', 'telegram_id', 'username', 'data_registo', 'estado_badge', 'motivo_bloqueio']
-    list_filter = ['ativo']
+    list_display = ['nome', 'telegram_id', 'username', 'data_registo', 'estado_badge', 'e_admin', 'motivo_bloqueio']
+    list_filter = ['ativo', 'e_admin']
     search_fields = ['nome', 'telegram_id', 'username']
     readonly_fields = ['data_registo']
     actions = ['bloquear_utilizadores', 'desbloquear_utilizadores']
+
+    def get_readonly_fields(self, request, obj=None):
+        # Only the reseller's superuser grants or removes Telegram admin rights (Stage 4).
+        campos = list(super().get_readonly_fields(request, obj))
+        return campos if request.user.is_superuser else campos + ['e_admin']
 
     @admin.display(description='Estado', ordering='ativo')
     def estado_badge(self, obj):
@@ -35,6 +41,21 @@ class UtilizadorAdmin(admin.ModelAdmin):
     def desbloquear_utilizadores(self, request, queryset):
         atualizados = queryset.update(ativo=True)
         self.message_user(request, f"{atualizados} utilizador(es) desbloqueado(s).", messages.SUCCESS)
+
+
+@admin.register(Loja)
+class LojaAdmin(admin.ModelAdmin):
+    """One settings row per shop: no add or delete; the list opens that row."""
+    fields = ['nome', 'texto_boas_vindas']
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        return redirect('admin:core_loja_change', services.obter_loja().pk)
 
 
 @admin.register(Categoria)
@@ -168,15 +189,19 @@ class EncomendaAdmin(admin.ModelAdmin):
             self.message_user(request, f"Não alteradas (só a partir de '{anterior}'): " + ", ".join(recusadas),
                               messages.ERROR)
 
-    @admin.action(description='🚚 Marcar como Enviada')
+    @admin.action(description='🚚 Marcar como Enviada', permissions=['change'])
     def marcar_enviada(self, request, queryset):
         self._avancar(request, queryset, 'enviada', 'enviada')
 
-    @admin.action(description='📬 Marcar como Entregue')
+    @admin.action(description='📬 Marcar como Entregue', permissions=['change'])
     def marcar_entregue(self, request, queryset):
         self._avancar(request, queryset, 'entregue', 'entregue')
 
-    @admin.action(description='❌ Marcar como Cancelada')
+    def has_cancelar_permission(self, request):
+        # Checked by Django when the action is listed and when it is posted (Stage 4).
+        return request.user.has_perm('core.cancelar_encomenda')
+
+    @admin.action(description='❌ Marcar como Cancelada', permissions=['cancelar'])
     def marcar_cancelada(self, request, queryset):
         # SEC-06: the same operation as the Telegram admin (Stripe, stock, audit, customer message).
         canceladas, falhas = 0, []

@@ -17,6 +17,8 @@ class Utilizador(models.Model):
     data_registo  = models.DateTimeField(auto_now_add=True)  # ← DateTimeField (era DateField)
     ativo         = models.BooleanField(default=True)        # ✅ já existia — usado por @verificar_bloqueio
     motivo_bloqueio = models.TextField(blank=True, null=True)  # ✅ NOVO — registo da razão do bloqueio
+    # Telegram admin rights (cart design, Stage 4); only a superuser can change it in Django admin.
+    e_admin       = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.nome} ({self.telegram_id})"
@@ -26,6 +28,29 @@ class Utilizador(models.Model):
         verbose_name    = "Utilizador"
         verbose_name_plural = "Utilizadores"
         ordering        = ['nome']
+
+
+# ── Loja (cart design, Stage 4) ────────────────────────────────────────────
+
+TEXTO_BOAS_VINDAS_PADRAO = "Bem-vindo à nossa loja. Escolhe uma opção para começar."
+
+
+class Loja(models.Model):
+    """The shop's own settings: one row (pk=1) per copy of the bot."""
+    nome              = models.CharField(max_length=80, default="Loja")
+    texto_boas_vindas = models.CharField(max_length=1000, default=TEXTO_BOAS_VINDAS_PADRAO)
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.nome
+
+    class Meta:
+        db_table        = 'loja'
+        verbose_name    = "Loja"
+        verbose_name_plural = "Loja"
 
 
 # ── Categoria ──────────────────────────────────────────────────────────────
@@ -198,6 +223,8 @@ class Encomenda(models.Model):
         verbose_name    = "Encomenda"
         verbose_name_plural = "Encomendas"
         ordering        = ['-data_encomenda']
+        # Not given to the "Dono da loja" group: cancelling and refunding stay in the Telegram panel.
+        permissions     = [('cancelar_encomenda', 'Pode cancelar e reembolsar encomendas')]
         constraints     = [
             # Legacy orders are excluded; order creation also refuses while any pending order exists.
             models.UniqueConstraint(

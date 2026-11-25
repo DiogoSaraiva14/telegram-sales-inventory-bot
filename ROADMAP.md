@@ -18,12 +18,26 @@ Status: draft sequencing from a static code review. Keep the work bounded; do no
 | Expiry stock release (SEC-04) | 2 | Done for expired sessions; orders that never got a session still hold stock |
 | Webhook idempotency (SEC-05) | 2 | Done with row locks; no notification retry |
 | Cancellation and refunds (SEC-06) | 2 | Done: one cancel operation for both admin surfaces, session expiry, full refunds; closes the checkout cancellation window |
-| Safe settings defaults (SEC-01) | 4 | Done; HTTPS, cookie and HSTS settings still open |
+| Safe settings defaults (SEC-01) | 4 | Done; HTTPS, cookie and HSTS settings added in cart Stage 4 (opt-in with `DJANGO_HTTPS`) |
 | Escape dynamic Telegram Markdown (SEC-07) | 4 | Done; not checked against live Telegram |
 | No raw Telegram ids, usernames or bot token in logs (SEC-08) | 4 | Done; bot logs rotate daily, 14 days kept |
 | Release stock of abandoned orders without a payment session (SEC-03) | 2 | Done: `manage.py cancelar_encomendas_abandonadas`, to be scheduled |
 | Process product images once, through storage (SEC-11) | 4 | Done |
 | Bounded in-process rate and session state (SEC-09) | 3 | Done; single polling process documented |
+
+## Cart and resellable shop (2026-11-25)
+
+The plan is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_shop.md). Each stage is one PR, merged after CI.
+
+| Stage | What | State |
+| --- | --- | --- |
+| 0 | Code ownership and course rights, licence, demo-image rights, invoicing clause, one Stripe test run | **Open.** It blocks the reseller goal; until it passes, the project stays a portfolio demo |
+| 1 | Categories in the database (migrations 0009–0011) | Done |
+| 2 | Multi-line orders from saved confirmation screens, 60-minute payment window, reconciling cleanup (0012) | Done |
+| 3 | Cart, "Repetir encomenda", draft retention (0013) | Done |
+| 4 | Shop settings, Telegram admin flag, "Dono da loja" group, HTTPS settings, DEPLOYMENT.md (0014–0015) | Done |
+| — | End-to-end run in Stripe test mode with a real webhook (G13) | Not done |
+| — | Customer "cancel my pending order" button, abandoned-cart reminders, a welcome image | Deferred |
 
 ## Phase 0 — Confirm scope and ownership
 

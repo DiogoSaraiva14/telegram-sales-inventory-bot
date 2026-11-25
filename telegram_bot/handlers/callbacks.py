@@ -10,7 +10,8 @@ from telegram.ext import ContextTypes
 
 from security.decorators import rate_limit, log_acao
 from security.sanitization import validar_callback, EntradaInvalida, pseudonimo
-from telegram_bot.guards import is_admin, verificar_bloqueio, verificar_sessao
+from core import services
+from telegram_bot.guards import verificar_bloqueio, verificar_sessao
 from telegram_bot.handlers import admin, customer
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         handler, admin_only = encontrar_rota(data)
         if handler is None:
             return
-        if admin_only and not is_admin(user_id):
+        if admin_only and not await services.e_admin(user_id):
             await query.answer("⛔ Acesso negado.", show_alert=True)
             return
         await handler(query, context, data, user_id)
