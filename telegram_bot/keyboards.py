@@ -1,7 +1,7 @@
 """Inline keyboard builders. Callback values here must match security/sanitization.py."""
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from telegram_bot.constants import CATEGORIAS, ESTADO_EMOJI
+from telegram_bot.constants import ESTADO_EMOJI
 from telegram_bot.guards import is_admin
 
 
@@ -32,10 +32,10 @@ def teclado_voltar_encomendas():
 
 # ── Cliente ────────────────────────────────────────────────────────────────
 
-def teclado_catalogo():
+def teclado_catalogo(categorias):
     keyboard = [
-        [InlineKeyboardButton(label, callback_data=f"cat_{key}")]
-        for key, label in CATEGORIAS.items()
+        [InlineKeyboardButton(c.nome, callback_data=f"cat_{c.id}")]
+        for c in categorias
     ]
     keyboard.append([InlineKeyboardButton("🔙 Menu Principal", callback_data="menu_inicio")])
     return InlineKeyboardMarkup(keyboard)
@@ -53,7 +53,7 @@ def teclado_produto(produto):
     encomendar_data  = f"encomendar_{produto.id}" if produto.stock_atual > 0 else "sem_stock"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(encomendar_label, callback_data=encomendar_data)],
-        [InlineKeyboardButton("🔙 Voltar à Categoria", callback_data=f"cat_{produto.categoria}")],
+        [InlineKeyboardButton("🔙 Voltar à Categoria", callback_data=f"cat_{produto.categoria_id}")],
     ])
 
 def teclado_minhas_encomendas(encomendas):
@@ -78,10 +78,10 @@ def teclado_ecra_expirado(produto_id):
         [InlineKeyboardButton("🔙 Voltar ao Produto", callback_data=f"produto_{produto_id}")],
     ])
 
-def teclado_falha_registo(callback_confirmar, categoria):
+def teclado_falha_registo(callback_confirmar, categoria_id):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Tentar novamente", callback_data=callback_confirmar)],
-        [InlineKeyboardButton("🔙 Voltar aos produtos", callback_data=f"cat_{categoria}")],
+        [InlineKeyboardButton("🔙 Voltar aos produtos", callback_data=f"cat_{categoria_id}")],
     ])
 
 def teclado_falha_pagamento(callback_confirmar):

@@ -24,7 +24,7 @@ def _texto_produto(p):
         f"📦 *{md(p.nome, '*')}*\n\n"
         f"💶 Preço: *{p.preco:.2f}€*\n"
         f"📦 Stock: *{p.stock_atual}* unidades\n"
-        f"📁 Categoria: {md(p.categoria)}\n"
+        f"📁 Categoria: {md(p.categoria.nome)}\n"
         f"Estado: {estado}"
     )
 

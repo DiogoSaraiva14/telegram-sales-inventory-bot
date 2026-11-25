@@ -12,7 +12,8 @@ from telegram.error import BadRequest, TimedOut
 from security.sanitization import ALLOWED_EXACT, ALLOWED_PREFIXES, validar_callback
 from telegram_bot import confirmacao, keyboards
 from telegram_bot.constants import (
-    MENSAGEM_ECRA_EXPIRADO, MENSAGEM_FALHA_REGISTO, MENSAGEM_JA_REGISTADA, MENSAGEM_PAGAMENTO_A_CONFIRMAR,
+    MENSAGEM_ECRA_EXPIRADO, MENSAGEM_FALHA_REGISTO, MENSAGEM_JA_REGISTADA, MENSAGEM_MENU_EXPIRADO,
+    MENSAGEM_PAGAMENTO_A_CONFIRMAR,
 )
 from telegram_bot.handlers import admin, callbacks, customer
 from telegram_bot.handlers.callbacks import encontrar_rota
@@ -163,7 +164,8 @@ class CheckoutHandlerTests(SimpleTestCase):
         self.query.from_user.id = 99
         self.query.answer = AsyncMock(side_effect=lambda *a, **k: self.calls.append("answer"))
         self.responder = AsyncMock(side_effect=lambda *a, **k: self.calls.append("responder"))
-        self.produto = SimpleNamespace(id=7, nome="SSD", preco=Decimal("50.00"), stock_atual=3, categoria="ssd")
+        self.produto = SimpleNamespace(id=7, nome="SSD", preco=Decimal("50.00"), stock_atual=3,
+                                       categoria_id=1, categoria=SimpleNamespace(nome="Armazenamento"))
         self.encomenda = SimpleNamespace(id=5, total=Decimal("50.00"), utilizador=SimpleNamespace(telegram_id="99"))
 
     def _cb(self, idade=0, chave=NONCE, produto_id=7):
@@ -290,7 +292,7 @@ class CheckoutHandlerTests(SimpleTestCase):
         texto, botoes, parse_mode = self._ecra()
         self.assertEqual(texto, MENSAGEM_FALHA_REGISTO)
         self.assertIsNone(parse_mode)
-        self.assertEqual(botoes, [("🔄 Tentar novamente", data), ("🔙 Voltar aos produtos", "cat_ssd")])
+        self.assertEqual(botoes, [("🔄 Tentar novamente", data), ("🔙 Voltar aos produtos", "cat_1")])
         self.assertNotIn("segredo", texto)
         self.assertIn("segredo interno", "\n".join(logs.output))
         self.garantir.assert_not_awaited()
@@ -362,7 +364,7 @@ class PhotoFallbackTests(SimpleTestCase):
     async def _show(self, image_path, send_photo_error=None, delete_error=None):
         produto = SimpleNamespace(
             id=7, nome="SSD", preco=Decimal("50.00"), stock_atual=3, descricao=None,
-            categoria="ssd", imagem=SimpleNamespace(open=lambda mode: open(image_path, mode)),
+            categoria_id=1, imagem=SimpleNamespace(open=lambda mode: open(image_path, mode)),
         )
         query = MagicMock()
         query.answer = AsyncMock()
@@ -383,7 +385,7 @@ class PhotoFallbackTests(SimpleTestCase):
         texto, keyboard = responder.await_args.args[2], responder.await_args.args[3]
         self.assertIn("(Imagem indisponível)", texto)
         callback_data = [b.callback_data for row in keyboard.inline_keyboard for b in row]
-        self.assertEqual(callback_data, ["encomendar_7", "cat_ssd"])
+        self.assertEqual(callback_data, ["encomendar_7", "cat_1"])
 
     async def test_missing_file_edits_old_message_to_text(self):
         query, context, responder = await self._show(os.path.join(self.existing_path + "_missing"))
@@ -642,3 +644,54 @@ class AdminUserToggleTests(SimpleTestCase):
         texto = responder.await_args.args[2]
         self.assertTrue(texto.startswith("👤 Ana *Silva*_x\n"))
         self.assertIsNone(responder.await_args.kwargs["parse_mode"])
+
+
+class CategoriaHandlerTests(SimpleTestCase):
+    """Stage 1: category buttons carry database ids; old or inactive ones expire gracefully."""
+
+    async def _categoria(self, data, categoria=None, produtos=()):
+        responder = AsyncMock()
+        with patch.object(customer.services, "get_categoria_ativa", AsyncMock(return_value=categoria)) as ativa, \
+             patch.object(customer.services, "get_produtos_por_categoria", AsyncMock(return_value=list(produtos))), \
+             patch.object(customer, "responder", responder):
+            await customer.categoria(MagicMock(), MagicMock(), data, 1)
+        return responder.await_args, ativa
+
+    async def test_old_code_button_shows_expired_menu(self):
+        for data in ("cat_ssd", "cat_", "cat_0", "cat_-1", "cat_01"):
+            chamada, ativa = await self._categoria(data)
+            self.assertEqual(chamada.args[2], MENSAGEM_MENU_EXPIRADO, data)
+            self.assertEqual(self._dados(chamada.args[3]), ["menu_catalogo"])
+            ativa.assert_not_awaited()
+
+    async def test_unknown_or_inactive_id_shows_expired_menu(self):
+        chamada, ativa = await self._categoria("cat_999", categoria=None)
+        self.assertEqual(chamada.args[2], MENSAGEM_MENU_EXPIRADO)
+        ativa.assert_awaited_once_with(999)
+
+    async def test_active_category_lists_its_products(self):
+        cat = SimpleNamespace(id=3, nome="Discos")
+        produto = SimpleNamespace(id=7, nome="SSD", preco=Decimal("50.00"))
+        chamada, _ = await self._categoria("cat_3", categoria=cat, produtos=[produto])
+        self.assertEqual(chamada.args[2], "Discos\nEscolhe um produto:")
+        self.assertEqual(self._dados(chamada.args[3]), ["produto_7", "menu_catalogo"])
+
+    async def test_category_name_is_escaped_in_markdown(self):
+        cat = SimpleNamespace(id=3, nome="Promo *_[")
+        chamada, _ = await self._categoria("cat_3", categoria=cat)
+        self.assertEqual(chamada.args[2], "😔 Sem produtos disponíveis em *Promo *\\**_[*.")
+
+    def test_admin_product_text_escapes_category_name(self):
+        produto = SimpleNamespace(nome="SSD", preco=Decimal("50.00"), stock_atual=3, ativo=True,
+                                  categoria=SimpleNamespace(nome="a_b*c[d"))
+        self.assertIn("📁 Categoria: a\\_b\\*c\\[d\n", admin._texto_produto(produto))
+
+    def test_catalog_has_one_button_per_category_in_order(self):
+        categorias = [SimpleNamespace(id=4, nome="Discos"), SimpleNamespace(id=2, nome="Memória")]
+        teclado = keyboards.teclado_catalogo(categorias)
+        botoes = [(b.text, b.callback_data) for row in teclado.inline_keyboard for b in row]
+        self.assertEqual(botoes, [("Discos", "cat_4"), ("Memória", "cat_2"), ("🔙 Menu Principal", "menu_inicio")])
+
+    @staticmethod
+    def _dados(teclado):
+        return [b.callback_data for row in teclado.inline_keyboard for b in row]
