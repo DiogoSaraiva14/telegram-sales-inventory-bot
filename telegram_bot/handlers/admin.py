@@ -34,10 +34,12 @@ def _texto_stock(p):
 
 # ── Menu ───────────────────────────────────────────────────────────────────
 
+def titulo_admin(loja):
+    return f"🔐 *Painel Admin — {md(loja.nome, '*')}*\n\nO que pretendes gerir?"
+
+
 async def admin_menu(query, context, data, user_id):
-    await responder(query, context,
-                    "🔐 *Painel Admin — Jarvis*\n\nO que pretendes gerir?",
-                    kb.teclado_admin_menu())
+    await responder(query, context, titulo_admin(await services.obter_loja_async()), kb.teclado_admin_menu())
 
 
 # ── Produtos ───────────────────────────────────────────────────────────────

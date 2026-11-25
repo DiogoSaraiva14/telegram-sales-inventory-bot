@@ -1,4 +1,3 @@
-import os
 import time
 import asyncio
 import logging
@@ -56,25 +55,6 @@ def rate_limit(func):
                 return
             _rate_data[user_id].append(agora)
 
-        return await func(update, context)
-    return wrapper
-
-# ── Admin only ─────────────────────────────────────────────────────
-ADMIN_IDS = set(
-    int(i) for i in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",") if i.strip()
-)
-
-def admin_only(func):
-    @wraps(func)
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id not in ADMIN_IDS:
-            logger.warning("Acesso não autorizado: utilizador=%s", pseudonimo(user_id))
-            if update.message:
-                await update.message.reply_text("🚫 Acesso restrito.")
-            elif update.callback_query:
-                await update.callback_query.answer("🚫 Acesso restrito.", show_alert=True)
-            return
         return await func(update, context)
     return wrapper
 

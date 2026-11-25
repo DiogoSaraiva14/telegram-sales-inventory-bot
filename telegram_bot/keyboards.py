@@ -2,7 +2,6 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from telegram_bot.constants import ESTADO_EMOJI
-from telegram_bot.guards import is_admin
 
 
 _MENU = [InlineKeyboardButton("🔙 Menu Principal", callback_data="menu_inicio")]
@@ -10,14 +9,15 @@ _MENU = [InlineKeyboardButton("🔙 Menu Principal", callback_data="menu_inicio"
 
 # ── Navegação ──────────────────────────────────────────────────────────────
 
-def teclado_menu_principal(user_id: int = None):
+def teclado_menu_principal(admin: bool = False):
+    """admin: the caller's `await services.e_admin(user_id)`."""
     buttons = [
         [InlineKeyboardButton("🛍️ Ver Catálogo", callback_data="menu_catalogo")],
         [InlineKeyboardButton("🛒 Carrinho", callback_data="carrinho_ver")],
         [InlineKeyboardButton("📦 As Minhas Encomendas", callback_data="menu_encomendas")],
         [InlineKeyboardButton("ℹ️ Ajuda", callback_data="menu_ajuda")],
     ]
-    if user_id and is_admin(user_id):
+    if admin:
         buttons.append([InlineKeyboardButton("🔐 Painel Admin", callback_data="admin_menu")])
     return InlineKeyboardMarkup(buttons)
 

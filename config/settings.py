@@ -29,6 +29,20 @@ DEBUG = os.getenv('DEBUG', 'False') == 'True'
 # (and only localhost when it is on); the bot itself serves no HTTP and needs none.
 ALLOWED_HOSTS = [h.strip() for h in os.getenv('ALLOWED_HOSTS', '').split(',') if h.strip()]
 
+# HTTPS for the Django admin and the Stripe webhook (SEC-01, cart design Stage 4). Off by
+# default so local development over http keeps working; on for every public deployment.
+if os.getenv('DJANGO_HTTPS', 'False') == 'True':
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 31536000
+    if os.getenv('DJANGO_BEHIND_PROXY', 'False') == 'True':
+        # Only behind a proxy that sets this header itself; otherwise clients could fake https.
+        SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Comma-separated origins allowed to post forms, e.g. https://shop.example.com.
+CSRF_TRUSTED_ORIGINS = [o.strip() for o in os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',') if o.strip()]
+
 
 # Application definition
 

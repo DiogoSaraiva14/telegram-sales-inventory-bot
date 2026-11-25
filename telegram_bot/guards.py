@@ -1,8 +1,7 @@
-"""Admin identity, session timeout and blocked-account checks.
+"""Session timeout and blocked-account checks (Telegram admins: core.services.e_admin).
 
 Session state is process-local (see SECURITY.md, SEC-09).
 """
-import os
 import time
 import logging
 from functools import wraps
@@ -14,17 +13,6 @@ from core.services import utilizador_bloqueado
 from security.sanitization import pseudonimo
 
 logger = logging.getLogger(__name__)
-
-# ── Admin IDs ──────────────────────────────────────────────────────────────
-
-ADMIN_IDS = set(
-    int(x.strip())
-    for x in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
-    if x.strip().isdigit()
-)
-
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
 
 # ── Session timeout ────────────────────────────────────────────────────────
 
