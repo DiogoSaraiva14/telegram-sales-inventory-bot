@@ -1,11 +1,11 @@
-"""PostgreSQL tests for Change 2 (concepts brief §3.7, §3.9, §3.10).
+"""PostgreSQL tests for checkout, payments, cancellation and the cart design stages.
 
 Run with: python manage.py test core   (needs the telegram_bot_test role, see README).
 """
 import importlib
-import secrets
 import threading
 import time
+from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,13 +18,14 @@ from django.db.models import ProtectedError
 from django.db.models.query import QuerySet
 from django.forms.models import model_to_dict
 from django.test import TestCase, TransactionTestCase, override_settings
+from django.utils import timezone
 
 from core import services
 from core.models import (
-    Categoria, Encomenda, LinhaEncomenda, MovimentoStock, Pagamento, Produto, RegistoAuditoria, Utilizador,
+    Categoria, ConfirmacaoCarrinho, Encomenda, LinhaEncomenda, MovimentoStock, Pagamento, Produto, RegistoAuditoria, Utilizador,
 )
 from telegram_bot import confirmacao
-from telegram_bot.constants import MENSAGEM_JA_REGISTADA
+from telegram_bot.constants import MENSAGEM_JA_REGISTADA, MENSAGEM_PRAZO_TERMINADO
 from telegram_bot.handlers import callbacks, customer
 
 URLS_A = dict(STRIPE_SUCCESS_URL="https://loja.example/sucesso", STRIPE_CANCEL_URL="https://loja.example/cancelar")
@@ -44,10 +45,6 @@ def criar_produto(stock=5, **campos):
     )
 
 
-def nova_chave():
-    return secrets.token_hex(8)
-
-
 def sessao(id_, status="open"):
     return SimpleNamespace(id=id_, url=f"https://checkout.example/{id_}", status=status, payment_status="unpaid")
 
@@ -57,77 +54,102 @@ def contagens():
             RegistoAuditoria.objects.filter(acao="CRIAR_ENCOMENDA").count())
 
 
-# ── reservar_encomenda (DB1–DB11) ──────────────────────────────────────────
+def ecra(cliente, *linhas):
+    """A saved confirmation screen for (produto, quantidade) pairs."""
+    resultado, snap = services.criar_confirmacao(cliente, [(p.id, q) for p, q in linhas])
+    assert resultado == "ok", snap
+    return snap
 
-class ReservarEncomendaTests(TestCase):
+
+def reservar(cliente, produto_id, quantidade=1):
+    """Create an order the Stage 2 way: a one-line confirmation screen, then Confirm."""
+    resultado, snap = services.criar_confirmacao(cliente, [(produto_id, quantidade)])
+    assert resultado == "ok", snap
+    return services.criar_encomenda_de_confirmacao(cliente, snap.nonce)
+
+
+def envelhecer(modelo, pk, campo, **idade):
+    modelo.objects.filter(pk=pk).update(**{campo: timezone.now() - timedelta(**idade)})
+
+
+# ── criar_encomenda_de_confirmacao (DB1–DB16) ──────────────────────────────
+
+class CriarEncomendaTests(TestCase):
 
     def setUp(self):
         self.produto = criar_produto(stock=5)
         self.cliente = utilizador_telegram()
 
-    def stock(self):
-        return Produto.objects.get(pk=self.produto.pk).stock_atual
+    def stock(self, produto=None):
+        return Produto.objects.get(pk=(produto or self.produto).pk).stock_atual
 
-    def test_db1_same_token_twice_creates_one_order(self):
-        chave = nova_chave()
-        r1, e1 = services.reservar_encomenda(self.cliente, self.produto.id, chave)
-        r2, e2 = services.reservar_encomenda(self.cliente, self.produto.id, chave)
+    def confirmar(self, snap, cliente=None):
+        return services.criar_encomenda_de_confirmacao(cliente or self.cliente, snap.nonce)
+
+    def test_db1_same_screen_twice_creates_one_order(self):
+        snap = ecra(self.cliente, (self.produto, 1))
+        r1, e1 = self.confirmar(snap)
+        r2, e2 = self.confirmar(snap)
         self.assertEqual((r1, r2), ("criada", "existente"))
         self.assertEqual(e1.id, e2.id)
         self.assertEqual(contagens(), (1, 1, 1, 1))
         self.assertEqual(MovimentoStock.objects.get().tipo_movimento, "saida")
         self.assertEqual(self.stock(), 4)
+        encomenda = Encomenda.objects.get()
+        self.assertEqual((encomenda.confirmacao_id, encomenda.chave_confirmacao), (snap.pk, snap.nonce))
 
-    def test_db2_unique_index_path_when_lookup_misses(self):
-        chave = nova_chave()
-        _, original = services.reservar_encomenda(self.cliente, self.produto.id, chave)
-        real = services._encomenda_por_chave
+    def test_db2_constraint_maps_a_racing_pending_order_to_pendente(self):
+        _, primeira = reservar(self.cliente, self.produto.id)
+        snap = ecra(self.cliente, (self.produto, 1))
+        real = services._pendente_de
         chamadas = []
 
-        def falha_uma_vez(c):
-            chamadas.append(c)
-            return None if len(chamadas) == 1 else real(c)
+        def falha_uma_vez(utilizador_id):
+            chamadas.append(utilizador_id)
+            return None if len(chamadas) == 1 else real(utilizador_id)
 
-        with patch.object(services, "_encomenda_por_chave", side_effect=falha_uma_vez):
-            resultado, encomenda = services.reservar_encomenda(self.cliente, self.produto.id, chave)
-        self.assertEqual(resultado, "existente")
-        self.assertEqual(encomenda.id, original.id)
-        self.assertEqual(len(chamadas), 2)  # the miss, then the lookup after the unique violation
-        self.assertEqual(contagens(), (1, 1, 1, 1))
-        self.assertEqual(self.stock(), 4)
-        self.assertEqual(Encomenda.objects.filter(chave_confirmacao=chave).count(), 1)  # transaction still usable
-
-    def test_db3_token_of_other_user_reveals_and_creates_nothing(self):
-        chave = nova_chave()
-        services.reservar_encomenda(self.cliente, self.produto.id, chave)
-        resultado, _ = services.reservar_encomenda(utilizador_telegram(2002, "Outra"), self.produto.id, chave)
-        self.assertEqual(resultado, "de_outro_utilizador")
+        with patch.object(services, "_pendente_de", side_effect=falha_uma_vez):
+            resultado, encomenda = self.confirmar(snap)
+        self.assertEqual((resultado, encomenda.id), ("pendente", primeira.id))
+        self.assertEqual(len(chamadas), 2)  # the miss, then the read after the unique violation
         self.assertEqual(contagens(), (1, 1, 1, 1))
         self.assertEqual(self.stock(), 4)
 
-    def test_db4_two_screens_create_two_orders(self):
-        services.reservar_encomenda(self.cliente, self.produto.id, nova_chave())
-        services.reservar_encomenda(self.cliente, self.produto.id, nova_chave())
-        self.assertEqual(contagens(), (2, 2, 2, 2))
-        self.assertEqual(self.stock(), 3)
-
-    def test_db5_no_stock_refuses_without_writing(self):
-        Produto.objects.filter(pk=self.produto.pk).update(stock_atual=0)
-        resultado, encomenda = services.reservar_encomenda(self.cliente, self.produto.id, nova_chave())
-        self.assertEqual((resultado, encomenda), ("sem_stock", None))
+    def test_db3_screen_of_other_user_reveals_and_creates_nothing(self):
+        outro = utilizador_telegram(2002, "Outra")
+        snap = ecra(self.cliente, (self.produto, 1))
+        self.assertEqual(self.confirmar(snap, outro), ("de_outro_utilizador", None))
         self.assertEqual(contagens(), (0, 0, 0, 0))
-        self.assertEqual(self.stock(), 0)
+        self.confirmar(snap)
+        self.assertEqual(self.confirmar(snap, outro), ("de_outro_utilizador", None))
+        self.assertEqual(contagens(), (1, 1, 1, 1))
+
+    def test_db4_second_screen_gets_the_pending_order(self):
+        primeiro, segundo = ecra(self.cliente, (self.produto, 1)), ecra(self.cliente, (self.produto, 1))
+        _, encomenda = self.confirmar(primeiro)
+        self.assertEqual(self.confirmar(segundo), ("pendente", encomenda))
+        self.assertEqual(contagens(), (1, 1, 1, 1))
+        self.assertEqual(self.stock(), 4)
+
+    def test_db5_short_stock_gives_alterado_without_writing(self):
+        snap = ecra(self.cliente, (self.produto, 2))
+        Produto.objects.filter(pk=self.produto.pk).update(stock_atual=1)
+        self.assertEqual(self.confirmar(snap),
+                         ("alterado", [services.Alteracao(self.produto.id, "SSD 1TB", "stock", 2, 1)]))
+        self.assertEqual(contagens(), (0, 0, 0, 0))
+        self.assertEqual(self.stock(), 1)
 
     def test_db6_failed_audit_rolls_back_everything(self):
+        snap = ecra(self.cliente, (self.produto, 1))
         with patch.object(RegistoAuditoria.objects, "create", side_effect=DatabaseError("audit down")):
             with self.assertRaises(DatabaseError):
-                services.reservar_encomenda(self.cliente, self.produto.id, nova_chave())
+                self.confirmar(snap)
         self.assertEqual(contagens(), (0, 0, 0, 0))
         self.assertEqual(self.stock(), 5)
 
     def test_db7_missing_image_file_does_not_break_checkout(self):
         Produto.objects.filter(pk=self.produto.pk).update(imagem="produtos/em-falta.jpg")
-        resultado, _ = services.reservar_encomenda(self.cliente, self.produto.id, nova_chave())
+        resultado, _ = reservar(self.cliente, self.produto.id)
         self.assertEqual(resultado, "criada")
         self.assertEqual(self.stock(), 4)
 
@@ -140,17 +162,8 @@ class ReservarEncomendaTests(TestCase):
             Encomenda.objects.create(utilizador=utilizador, total=1, chave_confirmacao="ab" * 8)
         self.assertEqual(Encomenda.objects.filter(chave_confirmacao__isnull=True).count(), 2)
 
-    def test_db9_retry_after_committed_attempt_returns_same_order(self):
-        chave = nova_chave()
-        _, primeira = services.reservar_encomenda(self.cliente, self.produto.id, chave)
-        antes = contagens()
-        resultado, segunda = services.reservar_encomenda(self.cliente, self.produto.id, chave)
-        self.assertEqual((resultado, segunda.id), ("existente", primeira.id))
-        self.assertEqual(contagens(), antes)
-        self.assertEqual(self.stock(), 4)
-
     def test_db10_retry_after_failed_attempt_creates_exactly_one(self):
-        chave = nova_chave()
+        snap = ecra(self.cliente, (self.produto, 1))
         real = RegistoAuditoria.objects.create
         falhas = []
 
@@ -162,15 +175,73 @@ class ReservarEncomendaTests(TestCase):
 
         with patch.object(RegistoAuditoria.objects, "create", side_effect=falha_uma_vez):
             with self.assertRaises(DatabaseError):
-                services.reservar_encomenda(self.cliente, self.produto.id, chave)
-            resultado, _ = services.reservar_encomenda(self.cliente, self.produto.id, chave)
+                self.confirmar(snap)
+            resultado, _ = self.confirmar(snap)
         self.assertEqual(resultado, "criada")
         self.assertEqual(contagens(), (1, 1, 1, 1))
 
-    def test_db11_line_keeps_product_name_from_order_time(self):
-        _, encomenda = services.reservar_encomenda(self.cliente, self.produto.id, nova_chave())
+    def test_db11_line_keeps_the_name_shown_on_the_screen(self):
+        snap = ecra(self.cliente, (self.produto, 1))
         Produto.objects.filter(pk=self.produto.pk).update(nome="SSD 1TB (novo nome)")
+        _, encomenda = self.confirmar(snap)
         self.assertEqual(encomenda.linhas.get().nome_produto, "SSD 1TB")
+
+    def test_db12_multi_line_order_takes_every_line(self):
+        outro = criar_produto(nome="RAM 16GB", preco=Decimal("39.99"), stock=3)
+        snap = ecra(self.cliente, (outro, 1), (self.produto, 2))
+        self.assertEqual(snap.total_centimos, 13999)
+        resultado, encomenda = self.confirmar(snap)
+        self.assertEqual((resultado, encomenda.total), ("criada", Decimal("139.99")))
+        linhas = list(encomenda.linhas.order_by("pk").values_list("produto_id", "quantidade", "subtotal"))
+        self.assertEqual(linhas, [(self.produto.id, 2, Decimal("100.00")), (outro.id, 1, Decimal("39.99"))])
+        self.assertEqual((self.stock(), self.stock(outro)), (3, 2))
+        self.assertEqual(MovimentoStock.objects.filter(tipo_movimento="saida").count(), 2)
+        descricao = RegistoAuditoria.objects.get(acao="CRIAR_ENCOMENDA").descricao
+        self.assertIn("2× SSD 1TB @ 50.00€; 1× RAM 16GB @ 39.99€", descricao)
+
+    def test_db13_each_change_gives_alterado_and_writes_nothing(self):
+        mudancas = {
+            "preco": lambda p: Produto.objects.filter(pk=p.pk).update(preco=Decimal("54.99")),
+            "inativo": lambda p: Produto.objects.filter(pk=p.pk).update(ativo=False),
+            "removido": lambda p: p.delete(),
+        }
+        for tipo, mudar in mudancas.items():
+            with self.subTest(tipo):
+                produto = criar_produto(nome=f"P {tipo}")
+                snap = ecra(self.cliente, (produto, 1))
+                mudar(produto)
+                resultado, alteracoes = self.confirmar(snap)
+                self.assertEqual((resultado, [a.tipo for a in alteracoes]), ("alterado", [tipo]))
+        self.assertEqual(alteracoes[0].nome, "P removido")
+        self.assertEqual(contagens(), (0, 0, 0, 0))
+
+    def test_db14_old_screen_expires_but_its_order_still_wins(self):
+        velho = ecra(self.cliente, (self.produto, 1))
+        envelhecer(ConfirmacaoCarrinho, velho.pk, "criada_em", minutes=31)
+        self.assertEqual(self.confirmar(velho), ("expirada", None))
+        snap = ecra(self.cliente, (self.produto, 1))
+        _, encomenda = self.confirmar(snap)
+        envelhecer(ConfirmacaoCarrinho, snap.pk, "criada_em", hours=2)
+        self.assertEqual(self.confirmar(snap), ("existente", encomenda))
+        self.assertEqual(self.confirmar(SimpleNamespace(nonce="0" * 16)), ("invalida", None))
+
+    def test_db15_legacy_pending_order_blocks_checkout_until_settled(self):
+        snap = ecra(self.cliente, (self.produto, 1))
+        utilizador = Utilizador.objects.get(telegram_id="1001")
+        legado = Encomenda.objects.create(utilizador=utilizador, total=Decimal("50.00"))  # pre-cart: no snapshot
+        self.assertEqual(self.confirmar(snap), ("pendente", legado))
+        self.assertEqual((contagens(), self.stock()), ((1, 0, 0, 0), 5))
+        Encomenda.objects.filter(pk=legado.pk).update(estado="cancelada")
+        self.assertEqual(self.confirmar(snap)[0], "criada")
+
+    def test_db16_screen_is_immutable_and_refused_when_unavailable(self):
+        snap = ecra(self.cliente, (self.produto, 1))
+        with self.assertRaises(ValueError):
+            snap.save()
+        Produto.objects.filter(pk=self.produto.pk).update(stock_atual=0)
+        resultado, problemas = services.criar_confirmacao(self.cliente, [(self.produto.id, 1)])
+        self.assertEqual((resultado, [p.tipo for p in problemas]), ("bloqueado", ["stock"]))
+        self.assertEqual(ConfirmacaoCarrinho.objects.count(), 1)
 
 
 # ── garantir_sessao_pagamento (S1–S22) ─────────────────────────────────────
@@ -180,7 +251,7 @@ class SessaoPagamentoTests(TestCase):
 
     def setUp(self):
         self.produto = criar_produto(stock=5, descricao="Descrição original")
-        _, self.encomenda = services.reservar_encomenda(utilizador_telegram(), self.produto.id, nova_chave())
+        _, self.encomenda = reservar(utilizador_telegram(), self.produto.id)
         create = patch.object(stripe.checkout.Session, "create")
         retrieve = patch.object(stripe.checkout.Session, "retrieve")
         self.create = create.start()
@@ -266,12 +337,11 @@ class SessaoPagamentoTests(TestCase):
         self.assertEqual(len(set(self.chaves_usadas())), 1)
 
     def test_s7_first_attempt_key_is_stable_per_order_and_short(self):
-        _, outra = services.reservar_encomenda(utilizador_telegram(), self.produto.id, nova_chave())
+        _, outra = reservar(utilizador_telegram(1002, "Outro"), self.produto.id)
         chave = services.chave_primeira_tentativa(self.encomenda)
         self.assertEqual(chave, services.chave_primeira_tentativa(Encomenda.objects.get(pk=self.encomenda.pk)))
         self.assertNotEqual(chave, services.chave_primeira_tentativa(outra))
-        for k in (chave, services.chave_substituicao(self.encomenda, "cs_" + "x" * 250)):
-            self.assertLessEqual(len(k), 255)
+        self.assertLessEqual(len(chave), 255)
 
     def test_s8_request_uses_saved_order_data_only(self):
         antes = services.parametros_checkout(self.encomenda)
@@ -282,81 +352,68 @@ class SessaoPagamentoTests(TestCase):
         item = depois["line_items"][0]["price_data"]
         self.assertEqual(item["unit_amount"], 5000)
         self.assertEqual(item["product_data"], {"name": "SSD 1TB"})
+        self.assertEqual(depois["expires_at"],
+                         int((self.encomenda.data_encomenda + services.JANELA_PAGAMENTO).timestamp()))
 
-    def test_s9_expired_session_is_replaced_with_new_key(self):
+    def test_s9_expired_session_cancels_the_order_without_a_new_session(self):
         self.pagamento(stripe_session_id="cs_old")
         self.retrieve.return_value = sessao("cs_old", "expired")
-        self.create.return_value = sessao("cs_new")
-        self.assertEqual(services.garantir_sessao_pagamento(self.encomenda),
-                         ("aberta", "https://checkout.example/cs_new"))
-        self.assertEqual(self.chaves_usadas(), [services.chave_substituicao(self.encomenda, "cs_old")])
-        linha = Pagamento.objects.get()
-        self.assertEqual((linha.stripe_session_id, linha.estado_pagamento), ("cs_new", "pendente"))
+        self.assertEqual(services.garantir_sessao_pagamento(self.encomenda), ("expirada", None))
+        self.create.assert_not_called()
+        self.assertEqual(Encomenda.objects.get(pk=self.encomenda.pk).estado, "cancelada")
+        self.assertEqual(Pagamento.objects.get().estado_pagamento, "falhado")
+        self.assertEqual(Produto.objects.get(pk=self.produto.pk).stock_atual, 5)
 
-    def test_s10_failed_replacement_save_then_retry_reuses_replacement_key(self):
-        self.pagamento(stripe_session_id="cs_old")
-        self.retrieve.return_value = sessao("cs_old", "expired")
-        self.create.return_value = sessao("cs_new")
-        with self.falhar_update_uma_vez():
-            with self.assertRaises(DatabaseError):
-                services.garantir_sessao_pagamento(self.encomenda)
-            self.assertEqual(Pagamento.objects.get().stripe_session_id, "cs_old")
-            services.garantir_sessao_pagamento(self.encomenda)
-        chaves = self.chaves_usadas()
-        self.assertEqual(chaves, [services.chave_substituicao(self.encomenda, "cs_old")] * 2)
-        self.assertEqual(Pagamento.objects.get().stripe_session_id, "cs_new")
-
-    def test_s11_second_expiry_gets_a_different_key(self):
-        self.pagamento(stripe_session_id="cs_old")
-        self.retrieve.return_value = sessao("cs_old", "expired")
-        self.create.return_value = sessao("cs_new")
-        services.garantir_sessao_pagamento(self.encomenda)
-        self.retrieve.return_value = sessao("cs_new", "expired")
-        self.create.return_value = sessao("cs_newer")
-        services.garantir_sessao_pagamento(self.encomenda)
-        primeira, segunda = self.chaves_usadas()
-        self.assertNotEqual(primeira, segunda)
-        self.assertEqual(segunda, services.chave_substituicao(self.encomenda, "cs_new"))
-        self.assertEqual(Pagamento.objects.get().stripe_session_id, "cs_newer")
-
-    def test_s12_failed_payment_with_expired_session_goes_back_to_pending(self):
-        self.pagamento(stripe_session_id="cs_old", estado_pagamento="falhado")
-        self.retrieve.return_value = sessao("cs_old", "expired")
-        self.create.return_value = sessao("cs_new")
-        services.garantir_sessao_pagamento(self.encomenda)
-        self.assertEqual(Pagamento.objects.get().estado_pagamento, "pendente")
-
-    def test_s13_lost_replacement_race_uses_the_stored_session(self):
-        pagamento = self.pagamento(stripe_session_id="cs_old")
-        self.retrieve.side_effect = lambda id_: sessao(id_, "expired" if id_ == "cs_old" else "open")
-
-        def outro_trabalhador_substitui(**kwargs):
-            Pagamento.objects.filter(pk=pagamento.pk).update(stripe_session_id="cs_other")
-            return sessao("cs_mine")
-
-        self.create.side_effect = outro_trabalhador_substitui
-        self.assertEqual(services.garantir_sessao_pagamento(self.encomenda),
-                         ("aberta", "https://checkout.example/cs_other"))
+    def test_s10_sessions_are_created_only_until_28_minutes(self):
+        envelhecer(Encomenda, self.encomenda.pk, "data_encomenda", minutes=27)
+        self.assertEqual(services.garantir_sessao_pagamento(self.encomenda)[0], "aberta")
+        Pagamento.objects.all().delete()
+        envelhecer(Encomenda, self.encomenda.pk, "data_encomenda", minutes=29)
+        self.assertEqual(services.garantir_sessao_pagamento(self.encomenda), ("expirada", None))
         self.assertEqual(self.create.call_count, 1)
-        self.assertEqual(Pagamento.objects.get().stripe_session_id, "cs_other")
+        self.assertEqual(Encomenda.objects.get(pk=self.encomenda.pk).estado, "cancelada")
+        self.assertEqual(Produto.objects.get(pk=self.produto.pk).stock_atual, 5)
 
-    def test_s14_replacement_sends_same_parameters_as_first_attempt(self):
-        services.garantir_sessao_pagamento(self.encomenda)  # first attempt, records cs_1
-        self.retrieve.return_value = sessao("cs_1", "expired")
-        self.create.return_value = sessao("cs_2")
-        services.garantir_sessao_pagamento(self.encomenda)
-        primeiro, substituicao = (dict(c.kwargs) for c in self.create.call_args_list)
-        self.assertNotEqual(primeiro.pop("idempotency_key"), substituicao.pop("idempotency_key"))
-        self.assertEqual(primeiro, substituicao)
+    def test_s11_retry_after_the_cutoff_creates_no_session(self):
+        self.create.side_effect = stripe.APIConnectionError("stripe down")
+        with self.assertRaises(stripe.APIConnectionError):
+            services.garantir_sessao_pagamento(self.encomenda)
+        envelhecer(Encomenda, self.encomenda.pk, "data_encomenda", minutes=29)
+        self.assertEqual(services.garantir_sessao_pagamento(self.encomenda), ("expirada", None))
+        self.assertEqual(self.create.call_count, 1)
+
+    def test_s12_payment_completing_at_the_deadline_waits_for_the_webhook(self):
+        self.pagamento(stripe_session_id="cs_old")
+        self.retrieve.side_effect = [sessao("cs_old", "expired"), sessao("cs_old", "complete")]
+        self.assertEqual(services.garantir_sessao_pagamento(self.encomenda), ("a_confirmar", None))
+        self.assertEqual(Encomenda.objects.get(pk=self.encomenda.pk).estado, "pendente")
+
+    def test_s13_stripe_error_during_the_deadline_cancel_changes_nothing(self):
+        self.pagamento(stripe_session_id="cs_old")
+        self.retrieve.side_effect = [sessao("cs_old", "expired"), stripe.APIConnectionError("down")]
+        with self.assertRaises(stripe.APIConnectionError):
+            services.garantir_sessao_pagamento(self.encomenda)
+        self.assertEqual(Encomenda.objects.get(pk=self.encomenda.pk).estado, "pendente")
+        self.assertEqual(Produto.objects.get(pk=self.produto.pk).stock_atual, 4)
+
+    def test_s14_multi_line_request_order_rounding_and_legacy_names(self):
+        outro = criar_produto(nome="RAM", preco=Decimal("19.99"), stock=3)
+        cliente = utilizador_telegram(1003, "Multi")
+        _, encomenda = services.criar_encomenda_de_confirmacao(
+            cliente, ecra(cliente, (outro, 1), (self.produto, 2)).nonce)
+        LinhaEncomenda.objects.filter(encomenda=encomenda, produto=outro).update(nome_produto=None)  # legacy line
+        itens = services.parametros_checkout(encomenda)["line_items"]
+        self.assertEqual([(i["price_data"]["product_data"]["name"], i["price_data"]["unit_amount"], i["quantity"])
+                          for i in itens], [("SSD 1TB", 5000, 2), ("RAM", 1999, 1)])
+        self.assertEqual((services._centimos(Decimal("0.125")), services._centimos(Decimal("19.994"))), (13, 1999))
 
     def test_s15_idempotency_error_is_raised_and_changes_nothing(self):
-        pagamento = self.pagamento(stripe_session_id="cs_old")
-        antes = model_to_dict(pagamento)
-        self.retrieve.return_value = sessao("cs_old", "expired")
-        self.create.side_effect = stripe.IdempotencyError("Keys for idempotent requests can only be used with the same parameters")
+        self.create.side_effect = stripe.IdempotencyError(
+            "Keys for idempotent requests can only be used with the same parameters")
         with self.assertRaises(stripe.IdempotencyError):
             services.garantir_sessao_pagamento(self.encomenda)
-        self.assertEqual(model_to_dict(Pagamento.objects.get(pk=pagamento.pk)), antes)
+        self.assertFalse(Pagamento.objects.exists())
+        self.assertEqual(Encomenda.objects.get(pk=self.encomenda.pk).estado, "pendente")
 
     def test_s16_saved_line_amount_equals_order_total(self):
         linha = self.encomenda.linhas.get()
@@ -385,22 +442,6 @@ class SessaoPagamentoTests(TestCase):
         self.assertNotEqual(primeiro.kwargs["idempotency_key"], segundo.kwargs["idempotency_key"])
         self.assertEqual(segundo.kwargs["success_url"], URLS_B["STRIPE_SUCCESS_URL"])
         self.assertEqual(list(Pagamento.objects.values_list("stripe_session_id", flat=True)), ["cs_b"])
-
-    def test_s19_changed_urls_during_replacement_give_new_replacement_key(self):
-        self.pagamento(stripe_session_id="cs_old")
-        self.retrieve.return_value = sessao("cs_old", "expired")
-        self.create.side_effect = [sessao("cs_a"), sessao("cs_b")]
-        with self.falhar_update_uma_vez():
-            with self.assertRaises(DatabaseError):
-                services.garantir_sessao_pagamento(self.encomenda)
-            with override_settings(**URLS_B):
-                services.garantir_sessao_pagamento(self.encomenda)
-                chave_b = services.chave_substituicao(self.encomenda, "cs_old")
-        primeira, segunda = self.chaves_usadas()
-        self.assertEqual(primeira, services.chave_substituicao(self.encomenda, "cs_old"))
-        self.assertEqual(segunda, chave_b)
-        self.assertNotEqual(primeira, segunda)
-        self.assertEqual(Pagamento.objects.get().stripe_session_id, "cs_b")
 
     def test_s20_changed_urls_after_session_recorded_only_retrieve(self):
         self.pagamento(stripe_session_id="cs_open")
@@ -434,36 +475,13 @@ class SessaoPagamentoTests(TestCase):
         self.assertEqual(services.garantir_sessao_pagamento(self.encomenda), ("nao_ativa", None))
         self.assertFalse(Pagamento.objects.exists())
 
-    def test_s24_cancelled_during_replacement_keeps_old_session(self):
-        self.pagamento(stripe_session_id="cs_old")
-        self.retrieve.return_value = sessao("cs_old", "expired")
-        self.create.side_effect = lambda **kw: self.cancelar_encomenda() or sessao("cs_new")
-        self.assertEqual(services.garantir_sessao_pagamento(self.encomenda), ("nao_ativa", None))
-        self.assertEqual(Pagamento.objects.get().stripe_session_id, "cs_old")
-
     def test_s25_cancelled_before_open_session_is_returned(self):
         self.pagamento(stripe_session_id="cs_open")
         self.retrieve.side_effect = lambda id_: self.cancelar_encomenda() or sessao(id_, "open")
         self.assertEqual(services.garantir_sessao_pagamento(self.encomenda), ("nao_ativa", None))
 
-    def test_s22_unchanged_webhook_confirms_replaced_session_and_ignores_old_id(self):
-        from core.views import _handle_payment_success
 
-        self.pagamento(stripe_session_id="cs_old")
-        self.retrieve.return_value = sessao("cs_old", "expired")
-        self.create.return_value = sessao("cs_new")
-        services.garantir_sessao_pagamento(self.encomenda)
-        with patch("core.views.httpx.post"), self.assertLogs("core.views", level="ERROR") as logs:
-            _handle_payment_success({"id": "cs_old"})
-        self.assertIn("Pagamento não encontrado", "\n".join(logs.output))
-        self.assertEqual(Pagamento.objects.get().estado_pagamento, "pendente")
-        with patch("core.views.httpx.post"):
-            _handle_payment_success({"id": "cs_new"})
-        self.assertEqual(Pagamento.objects.get().estado_pagamento, "pago")
-        self.assertEqual(Encomenda.objects.get(pk=self.encomenda.pk).estado, "confirmada")
-
-
-# ── Handler + services + PostgreSQL together (E1, E2) ──────────────────────
+# ── Handler + services + PostgreSQL together (E1–E3) ───────────────────────
 
 @override_settings(**URLS_A)
 class CheckoutEndToEndTests(TestCase):
@@ -472,7 +490,7 @@ class CheckoutEndToEndTests(TestCase):
         self.produto = criar_produto(stock=5)
         self.cliente = utilizador_telegram(4242)
 
-    async def toque(self, data, momento):
+    async def toque(self, data):
         query = MagicMock()
         query.from_user = self.cliente
         query.answer = AsyncMock()
@@ -480,39 +498,54 @@ class CheckoutEndToEndTests(TestCase):
         query.message.document = None
         query.edit_message_text = AsyncMock()
         wrapped = callbacks._RespostaUnica(query)
-        with patch.object(confirmacao, "agora", return_value=momento):
-            await customer.confirmar_encomenda(wrapped, MagicMock(), data, self.cliente.id)
-            await wrapped.answer()
+        await customer.confirmar_encomenda(wrapped, MagicMock(), data, self.cliente.id)
+        await wrapped.answer()
         return query
 
+    async def ecra(self):
+        snap = await sync_to_async(ecra)(self.cliente, (self.produto, 1))
+        return confirmacao.callback_confirmar(snap.nonce)
+
     async def test_e1_two_taps_same_screen_one_order(self):
-        agora = int(time.time())
-        data = confirmacao.callback_confirmar(self.produto.id, nova_chave(), emitida_em=agora)
+        data = await self.ecra()
         with patch.object(stripe.checkout.Session, "create", return_value=sessao("cs_e1")) as create, \
              patch.object(stripe.checkout.Session, "retrieve", return_value=sessao("cs_e1", "open")):
-            primeiro = await self.toque(data, agora)
-            segundo = await self.toque(data, agora + 5)
+            primeiro = await self.toque(data)
+            segundo = await self.toque(data)
         self.assertEqual(await sync_to_async(contagens)(), (1, 1, 1, 1))
         self.assertEqual(await sync_to_async(Pagamento.objects.count)(), 1)
         self.assertEqual(create.call_count, 1)
         primeiro.answer.assert_awaited_once_with()
         segundo.answer.assert_awaited_once_with(MENSAGEM_JA_REGISTADA, show_alert=True)
 
-    async def test_e2_old_button_after_failed_stripe_recovers_payment(self):
-        agora = int(time.time())
-        data = confirmacao.callback_confirmar(self.produto.id, nova_chave(), emitida_em=agora)
+    async def test_e2_retry_after_failed_stripe_recovers_payment(self):
+        data = await self.ecra()
         with patch.object(stripe.checkout.Session, "create",
                           side_effect=[stripe.APIConnectionError("down"), sessao("cs_e2")]) as create:
             with self.assertLogs("telegram_bot.handlers.customer", level="ERROR"):
-                await self.toque(data, agora)
+                await self.toque(data)
             self.assertEqual(await sync_to_async(Pagamento.objects.count)(), 0)
-            segundo = await self.toque(data, agora + 45 * 60)
+            segundo = await self.toque(data)
         self.assertEqual(await sync_to_async(contagens)(), (1, 1, 1, 1))
         segundo.answer.assert_awaited_once_with(MENSAGEM_JA_REGISTADA, show_alert=True)
         primeira_chave, segunda_chave = (c.kwargs["idempotency_key"] for c in create.call_args_list)
         self.assertEqual(primeira_chave, segunda_chave)
         texto = segundo.edit_message_text.await_args.kwargs["text"]
         self.assertIn("Clica no botão abaixo para completar o pagamento", texto)
+
+    async def test_e3_retry_after_the_cutoff_ends_the_order(self):
+        data = await self.ecra()
+        with patch.object(stripe.checkout.Session, "create", side_effect=stripe.APIConnectionError("down")) as create:
+            with self.assertLogs("telegram_bot.handlers.customer", level="ERROR"):
+                await self.toque(data)
+            encomenda = await sync_to_async(Encomenda.objects.get)()
+            await sync_to_async(envelhecer)(Encomenda, encomenda.pk, "data_encomenda", minutes=29)
+            segundo = await self.toque(data)
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(segundo.edit_message_text.await_args.kwargs["text"], MENSAGEM_PRAZO_TERMINADO)
+        self.assertEqual((await sync_to_async(Encomenda.objects.get)()).estado, "cancelada")
+        produto = await sync_to_async(Produto.objects.get)(pk=self.produto.pk)
+        self.assertEqual(produto.stock_atual, 5)
 
 
 # ── Real concurrency on PostgreSQL (T1, T2; owner decision G1) ─────────────
@@ -541,45 +574,41 @@ class ConcurrentCheckoutTests(TransactionTestCase):
             time.sleep(0.05)
         return False
 
-    def correr_em_paralelo(self, pedido_a, pedido_b):
-        """Thread A pauses while holding the product lock; prove B waits on it in PostgreSQL."""
+    def correr_em_paralelo(self, tarefa_a, tarefa_b):
+        """Thread A pauses right after locking its products; prove B waits on A in PostgreSQL."""
         pids, resultados, tempos = {}, {}, {}
         a_tem_bloqueio, libertar_a = threading.Event(), threading.Event()
-        real = services._encomenda_por_chave
+        real = services._bloquear_produtos
 
-        def procura(chave):
-            nome = threading.current_thread().name
-            if nome == "A" and not a_tem_bloqueio.is_set():
-                a_tem_bloqueio.set()  # step 3 runs after step 2's SELECT ... FOR UPDATE
+        def bloquear(ids):
+            produtos = real(ids)
+            if threading.current_thread().name == "A" and not a_tem_bloqueio.is_set():
+                a_tem_bloqueio.set()
                 if not libertar_a.wait(10):
                     raise RuntimeError("A não foi libertado")
-            elif nome == "B":
-                tempos.setdefault("b_passou_bloqueio", time.monotonic())
-            return real(chave)
+            return produtos
 
-        def correr(nome, pedido):
+        def correr(nome, tarefa):
             try:
                 with connection.cursor() as cursor:
                     cursor.execute("SELECT pg_backend_pid()")
                     pids[nome] = cursor.fetchone()[0]
-                resultados[nome] = services.reservar_encomenda(*pedido)
+                resultados[nome] = tarefa()
+                tempos[nome] = time.monotonic()
             except Exception as exc:  # reported by the assertions below
                 resultados[nome] = exc
             finally:
                 connection.close()
 
-        with patch.object(services, "_encomenda_por_chave", side_effect=procura):
-            thread_a = threading.Thread(target=correr, name="A", args=("A", pedido_a))
-            thread_b = threading.Thread(target=correr, name="B", args=("B", pedido_b))
+        with patch.object(services, "_bloquear_produtos", side_effect=bloquear):
+            thread_a = threading.Thread(target=correr, name="A", args=("A", tarefa_a))
+            thread_b = threading.Thread(target=correr, name="B", args=("B", tarefa_b))
             thread_a.start()
             try:
-                self.assertTrue(a_tem_bloqueio.wait(5), "A não chegou ao bloqueio do produto")
+                self.assertTrue(a_tem_bloqueio.wait(5), "A não chegou ao bloqueio dos produtos")
                 thread_b.start()
                 self.assertTrue(self.esperar_bloqueio(pids, "B", "A"), "B nunca ficou bloqueado por A")
                 self.assertNotIn("B", resultados)
-                with connection.cursor() as cursor:
-                    cursor.execute("SELECT pg_blocking_pids(%s)", [pids["B"]])
-                    self.assertIn(pids["A"], cursor.fetchone()[0])
             finally:
                 tempos["libertado"] = time.monotonic()
                 libertar_a.set()
@@ -587,39 +616,83 @@ class ConcurrentCheckoutTests(TransactionTestCase):
                 if thread_b.is_alive() or thread_b.ident:
                     thread_b.join(10)
         self.assertFalse(thread_a.is_alive() or thread_b.is_alive(), "uma thread não terminou")
-        self.assertGreater(tempos["b_passou_bloqueio"], tempos["libertado"])
         for nome in ("A", "B"):
             self.assertNotIsInstance(resultados[nome], Exception, resultados[nome])
+        self.assertGreater(tempos["B"], tempos["libertado"])
         return resultados
 
-    def test_t1_last_unit_two_screens_one_order_one_no_stock(self):
+    @staticmethod
+    def confirmar(cliente, snap):
+        return lambda: services.criar_encomenda_de_confirmacao(cliente, snap.nonce)
+
+    def test_t1_last_unit_two_customers_one_order_one_alterado(self):
         produto = criar_produto(stock=1)
-        a = (utilizador_telegram(5001, "Cliente A"), produto.id, nova_chave())
-        b = (utilizador_telegram(5002, "Cliente B"), produto.id, nova_chave())
-        Utilizador.objects.create(telegram_id="5001", nome="Cliente A")
-        Utilizador.objects.create(telegram_id="5002", nome="Cliente B")
-        resultados = self.correr_em_paralelo(a, b)
+        a, b = utilizador_telegram(5001, "Cliente A"), utilizador_telegram(5002, "Cliente B")
+        snap_a, snap_b = ecra(a, (produto, 1)), ecra(b, (produto, 1))
+        resultados = self.correr_em_paralelo(self.confirmar(a, snap_a), self.confirmar(b, snap_b))
         self.assertEqual(resultados["A"][0], "criada")
-        self.assertEqual(resultados["B"], ("sem_stock", None))
+        self.assertEqual((resultados["B"][0], [x.tipo for x in resultados["B"][1]]), ("alterado", ["stock"]))
         self.assertEqual(contagens(), (1, 1, 1, 1))
         self.assertEqual(Produto.objects.get(pk=produto.pk).stock_atual, 0)
 
     def test_t2_same_screen_from_two_threads_one_order(self):
         produto = criar_produto(stock=5)
-        Utilizador.objects.create(telegram_id="5003", nome="Cliente")
-        pedido = (utilizador_telegram(5003, "Cliente"), produto.id, nova_chave())
-        resultados = self.correr_em_paralelo(pedido, pedido)
-        self.assertEqual(resultados["A"][0], "criada")
-        self.assertEqual(resultados["B"][0], "existente")
+        cliente = utilizador_telegram(5003, "Cliente")
+        snap = ecra(cliente, (produto, 1))
+        resultados = self.correr_em_paralelo(self.confirmar(cliente, snap), self.confirmar(cliente, snap))
+        self.assertEqual((resultados["A"][0], resultados["B"][0]), ("criada", "existente"))
         self.assertEqual(resultados["A"][1].id, resultados["B"][1].id)
         self.assertEqual(contagens(), (1, 1, 1, 1))
+        self.assertEqual(Produto.objects.get(pk=produto.pk).stock_atual, 4)
+
+    def test_t6_shared_products_in_opposite_order_never_deadlock(self):
+        p1, p2 = criar_produto(nome="A", stock=5), criar_produto(nome="B", stock=5)
+        a, b = utilizador_telegram(5011, "Cliente A"), utilizador_telegram(5012, "Cliente B")
+        snap_a, snap_b = ecra(a, (p1, 1), (p2, 2)), ecra(b, (p2, 1), (p1, 1))
+        resultados = self.correr_em_paralelo(self.confirmar(a, snap_a), self.confirmar(b, snap_b))
+        self.assertEqual((resultados["A"][0], resultados["B"][0]), ("criada", "criada"))
+        self.assertEqual([Produto.objects.get(pk=p.pk).stock_atual for p in (p1, p2)], [3, 2])
+
+    def test_t7_checkout_waits_for_a_cancellation_returning_shared_stock(self):
+        produto = criar_produto(stock=2)
+        antigo, novo = utilizador_telegram(5013, "Antigo"), utilizador_telegram(5014, "Novo")
+        snap = ecra(novo, (produto, 1))  # drawn while stock was 2
+        _, encomenda = reservar(antigo, produto.id, 2)  # stock 0
+        resultados = self.correr_em_paralelo(lambda: services.cancelar_encomenda(encomenda.id, "teste"),
+                                             self.confirmar(novo, snap))
+        self.assertEqual((resultados["A"][0], resultados["B"][0]), ("cancelada", "criada"))
+        self.assertEqual(Produto.objects.get(pk=produto.pk).stock_atual, 1)
+
+    def test_t8_two_screens_of_one_customer_one_order_one_pendente(self):
+        produto = criar_produto(stock=5)
+        cliente = utilizador_telegram(5015, "Cliente")
+        primeiro, segundo = ecra(cliente, (produto, 1)), ecra(cliente, (produto, 1))
+        resultados = self.correr_em_paralelo(self.confirmar(cliente, primeiro), self.confirmar(cliente, segundo))
+        self.assertEqual((resultados["A"][0], resultados["B"][0]), ("criada", "pendente"))
+        self.assertEqual(resultados["B"][1].id, resultados["A"][1].id)
+        self.assertEqual(contagens(), (1, 1, 1, 1))
+        self.assertEqual(Produto.objects.get(pk=produto.pk).stock_atual, 4)
+
+    def test_t9_admin_cancel_of_a_paid_order_racing_the_same_customers_checkout(self):
+        produto = criar_produto(stock=5)
+        cliente = utilizador_telegram(5016, "Cliente")
+        _, paga = reservar(cliente, produto.id)
+        Encomenda.objects.filter(pk=paga.pk).update(estado="confirmada")
+        Pagamento.objects.create(encomenda=paga, metodo="stripe", valor=paga.total,
+                                 estado_pagamento="pago", stripe_session_id="cs_t9")
+        snap = ecra(cliente, (produto, 1))
+        with patch.object(stripe.checkout.Session, "retrieve", return_value=SimpleNamespace(payment_intent="pi_t9")), \
+             patch.object(stripe.Refund, "create"):
+            resultados = self.correr_em_paralelo(lambda: services.cancelar_encomenda(paga.id, "teste"),
+                                                 self.confirmar(cliente, snap))
+        self.assertEqual((resultados["A"][0], resultados["B"][0]), ("reembolsada", "criada"))
         self.assertEqual(Produto.objects.get(pk=produto.pk).stock_atual, 4)
 
     def test_t3_cancellation_in_progress_wins_over_session_save(self):
         """P1: an admin cancellation mid-transaction blocks the session save, then wins."""
         produto = criar_produto(stock=5)
         Utilizador.objects.create(telegram_id="5004", nome="Cliente")
-        _, encomenda = services.reservar_encomenda(utilizador_telegram(5004, "Cliente"), produto.id, nova_chave())
+        _, encomenda = reservar(utilizador_telegram(5004, "Cliente"), produto.id)
         pids, resultados = {}, {}
         admin_tem_bloqueio, libertar_admin = threading.Event(), threading.Event()
 
@@ -677,7 +750,7 @@ class ExpiracaoPagamentoTests(TestCase):
         from core.views import _handle_payment_expired
         self.expirar = _handle_payment_expired
         self.produto = criar_produto(stock=5)
-        _, self.encomenda = services.reservar_encomenda(utilizador_telegram(7007), self.produto.id, nova_chave())
+        _, self.encomenda = reservar(utilizador_telegram(7007), self.produto.id)
         self.pagamento = Pagamento.objects.create(
             encomenda=self.encomenda, metodo="stripe", valor=self.encomenda.total,
             estado_pagamento="pendente", stripe_session_id="cs_exp")
@@ -760,7 +833,7 @@ class ConfirmacaoPagamentoTests(TestCase):
     def setUp(self):
         from core.views import _handle_payment_success
         self.confirmar = _handle_payment_success
-        _, self.encomenda = services.reservar_encomenda(utilizador_telegram(7008), criar_produto(stock=5).id, nova_chave())
+        _, self.encomenda = reservar(utilizador_telegram(7008), criar_produto(stock=5).id)
         self.pagamento = Pagamento.objects.create(
             encomenda=self.encomenda, metodo="stripe", valor=self.encomenda.total,
             estado_pagamento="pendente", stripe_session_id="cs_ok")
@@ -809,7 +882,7 @@ class ConcurrentWebhookTests(TransactionTestCase):
         """Delivery A pauses holding the locks; delivery B must wait, then do nothing."""
         from core.views import _handle_payment_success
         Utilizador.objects.create(telegram_id="5005", nome="Cliente")
-        _, encomenda = services.reservar_encomenda(utilizador_telegram(5005, "Cliente"), criar_produto(stock=5).id, nova_chave())
+        _, encomenda = reservar(utilizador_telegram(5005, "Cliente"), criar_produto(stock=5).id)
         Pagamento.objects.create(encomenda=encomenda, metodo="stripe", valor=encomenda.total,
                                  estado_pagamento="pendente", stripe_session_id="cs_t4")
         pids, erros = {}, []
@@ -861,7 +934,7 @@ class CancelamentoTests(TestCase):
 
     def setUp(self):
         self.produto = criar_produto(stock=5)
-        _, self.encomenda = services.reservar_encomenda(utilizador_telegram(7010), self.produto.id, nova_chave())
+        _, self.encomenda = reservar(utilizador_telegram(7010), self.produto.id)
         mocks = {}
         for alvo, nome in ((stripe.checkout.Session, "retrieve"), (stripe.checkout.Session, "expire"),
                            (stripe.Refund, "create")):
@@ -978,7 +1051,7 @@ class CancelamentoTests(TestCase):
     def test_c10_django_admin_bulk_cancel_uses_the_shared_operation(self):
         from django.contrib import admin as django_admin
         from core.admin import EncomendaAdmin
-        _, enviada = services.reservar_encomenda(utilizador_telegram(7011), self.produto.id, nova_chave())
+        _, enviada = reservar(utilizador_telegram(7011), self.produto.id)
         Encomenda.objects.filter(pk=enviada.pk).update(estado="enviada")
         modelo = EncomendaAdmin(Encomenda, django_admin.site)
         with patch.object(modelo, "message_user") as message_user:
@@ -1005,7 +1078,7 @@ class ConcurrentCancellationTests(TransactionTestCase):
         from core.views import _handle_payment_success
         Utilizador.objects.create(telegram_id="5006", nome="Cliente")
         produto = criar_produto(stock=5)
-        _, encomenda = services.reservar_encomenda(utilizador_telegram(5006, "Cliente"), produto.id, nova_chave())
+        _, encomenda = reservar(utilizador_telegram(5006, "Cliente"), produto.id)
         Pagamento.objects.create(encomenda=encomenda, metodo="stripe", valor=encomenda.total,
                                  estado_pagamento="pendente", stripe_session_id="cs_t5")
         pids, erros = {}, []
@@ -1065,7 +1138,7 @@ class AdminInvariantTests(TestCase):
         self.EncomendaAdmin, self.PagamentoAdmin = EncomendaAdmin, PagamentoAdmin
         self.LinhaEncomendaAdmin, self.ProdutoAdmin = LinhaEncomendaAdmin, ProdutoAdmin
         self.produto = criar_produto(stock=5)
-        _, self.encomenda = services.reservar_encomenda(utilizador_telegram(7020), self.produto.id, nova_chave())
+        _, self.encomenda = reservar(utilizador_telegram(7020), self.produto.id)
         envio = patch("core.views.httpx.post", return_value=MagicMock(status_code=200))
         self.post = envio.start()
         self.addCleanup(envio.stop)
@@ -1097,7 +1170,7 @@ class AdminInvariantTests(TestCase):
         self.assertEqual(self.estado(), "cancelada")
 
     def test_a3_django_ship_action_uses_the_step_and_notifies(self):
-        _, confirmada = services.reservar_encomenda(utilizador_telegram(7021), self.produto.id, nova_chave())
+        _, confirmada = reservar(utilizador_telegram(7021), self.produto.id)
         Encomenda.objects.filter(pk=confirmada.pk).update(estado="confirmada")
         modelo = self.EncomendaAdmin(Encomenda, self.site)
         self.assertNotIn("marcar_confirmada", modelo.actions)
@@ -1147,6 +1220,17 @@ class AdminInvariantTests(TestCase):
         self.assertTrue(MovimentoStock.objects.filter(tipo_movimento="entrada", quantidade=2).exists())
         self.assertIn("delta=2, novo stock=5 (Django admin: admin)",
                       RegistoAuditoria.objects.get(acao="AJUSTE_STOCK").descricao)
+
+    def test_a8_bulk_activation_locks_products_in_id_order(self):
+        from django.test.utils import CaptureQueriesContext
+        outro = criar_produto(nome="Outro")
+        modelo = self.ProdutoAdmin(Produto, self.site)
+        with CaptureQueriesContext(connection) as consultas, patch.object(modelo, "message_user"):
+            modelo.desativar_produtos(SimpleNamespace(user="admin"),
+                                      Produto.objects.filter(pk__in=[outro.pk, self.produto.pk]))
+        self.assertFalse(Produto.objects.filter(ativo=True).exists())
+        bloqueio = next(q["sql"] for q in consultas.captured_queries if "FOR UPDATE" in q["sql"])
+        self.assertIn("ORDER BY", bloqueio)
 
     def test_a7_telegram_toggle_and_stock_buttons_keep_a_concurrent_checkout(self):
         produto = Produto.objects.get(pk=self.produto.pk)  # stock 4 in memory
@@ -1209,61 +1293,103 @@ class ImagemProdutoTests(TestCase):
         self.assertTrue(produto.imagem.name.endswith(".jpg"))
 
 
-# ── Abandoned orders without a payment session are released (SEC-03) ──────
+# ── The cleanup reconciles every old pending order (SEC-03, cart design G12) ─
 
 @override_settings(TELEGRAM_TOKEN="test-token", **URLS_A)
 class EncomendasAbandonadasTests(TestCase):
 
     def setUp(self):
-        from datetime import timedelta
-        from django.utils import timezone
-        self.produto = criar_produto(stock=5)
+        self.produto = criar_produto(stock=10)
         self.encomendas = {}
-        for nome, horas, telegram_id in (("velha", 25, 7030), ("recente", 23, 7031), ("velha_paga", 30, 7032)):
-            _, encomenda = services.reservar_encomenda(utilizador_telegram(telegram_id), self.produto.id, nova_chave())
-            Encomenda.objects.filter(pk=encomenda.pk).update(data_encomenda=timezone.now() - timedelta(hours=horas))
+        for nome, horas, telegram_id in (("velha", 25, 7030), ("recente", 23, 7031), ("com_sessao", 30, 7032)):
+            _, encomenda = reservar(utilizador_telegram(telegram_id), self.produto.id)
+            envelhecer(Encomenda, encomenda.pk, "data_encomenda", hours=horas)
             self.encomendas[nome] = encomenda
-        Pagamento.objects.create(encomenda=self.encomendas["velha_paga"], metodo="stripe",
-                                 valor=Decimal("10.00"), estado_pagamento="pendente", stripe_session_id="cs_v")
+        self.pagamento = Pagamento.objects.create(
+            encomenda=self.encomendas["com_sessao"], metodo="stripe", valor=Decimal("50.00"),
+            estado_pagamento="pendente", stripe_session_id="cs_v")
+        mocks = {}
+        for nome in ("retrieve", "expire"):
+            p = patch.object(stripe.checkout.Session, nome)
+            mocks[nome] = p.start()
+            self.addCleanup(p.stop)
+        self.retrieve, self.expire = mocks["retrieve"], mocks["expire"]
+        self.retrieve.return_value = sessao("cs_v", "open")
         envio = patch("core.views.httpx.post", return_value=MagicMock(status_code=200))
         self.post = envio.start()
         self.addCleanup(envio.stop)
 
-    def estado(self, nome):
-        return Encomenda.objects.get(pk=self.encomendas[nome].pk).estado
-
-    def test_sweep_cancels_only_old_orders_without_a_payment(self):
+    def correr(self, *argumentos):
         from io import StringIO
         from django.core.management import call_command
         saida = StringIO()
-        with patch.object(stripe.checkout.Session, "retrieve") as retrieve:
-            call_command("cancelar_encomendas_abandonadas", stdout=saida)
-        retrieve.assert_not_called()
-        self.assertEqual((self.estado("velha"), self.estado("recente"), self.estado("velha_paga")),
-                         ("cancelada", "pendente", "pendente"))
-        self.assertEqual(Produto.objects.get(pk=self.produto.pk).stock_atual, 3)  # 5 - 3 + 1
-        self.assertIn("sem pagamento há mais de 24 h", RegistoAuditoria.objects.get(acao="CANCELAR_ENCOMENDA").descricao)
-        self.post.assert_called_once()
-        self.assertEqual(self.post.call_args.kwargs["json"]["chat_id"], "7030")
-        self.assertIn("1 encomenda(s)", saida.getvalue())
+        call_command("cancelar_encomendas_abandonadas", *argumentos, stdout=saida)
+        return saida.getvalue()
+
+    def estado(self, nome):
+        return Encomenda.objects.get(pk=self.encomendas[nome].pk).estado
+
+    def stock(self):
+        return Produto.objects.get(pk=self.produto.pk).stock_atual
+
+    def test_unpaid_old_orders_are_cancelled_and_open_sessions_expired(self):
+        saida = self.correr()
+        self.assertEqual((self.estado("velha"), self.estado("recente"), self.estado("com_sessao")),
+                         ("cancelada", "pendente", "cancelada"))
+        self.expire.assert_called_once_with("cs_v")
+        self.assertEqual(self.stock(), 9)  # 10 - 3 + 2
+        self.assertIn("sem pagamento há mais de 24 h",
+                      RegistoAuditoria.objects.filter(acao="CANCELAR_ENCOMENDA").first().descricao)
+        self.assertEqual(self.post.call_count, 2)
+        self.assertIn("0 confirmada(s), 2 cancelada(s), 0 erro(s)", saida)
+
+    def test_paid_session_is_confirmed_like_the_webhook(self):
+        self.retrieve.return_value = sessao("cs_v", "complete")
+        saida = self.correr()
+        self.assertEqual(self.estado("com_sessao"), "confirmada")
+        self.assertEqual(Pagamento.objects.get(pk=self.pagamento.pk).estado_pagamento, "pago")
+        self.expire.assert_not_called()
+        self.assertEqual(RegistoAuditoria.objects.filter(acao="PAGAMENTO_CONFIRMADO").count(), 1)
+        textos = [c.kwargs["json"]["text"] for c in self.post.call_args_list]
+        self.assertTrue(any("foi confirmada" in t for t in textos))
+        self.assertEqual(self.stock(), 8)  # only the unpaid order's unit came back
+        self.assertIn("1 confirmada(s), 1 cancelada(s), 0 erro(s)", saida)
+
+    def test_stripe_error_leaves_the_order_for_the_next_run(self):
+        self.retrieve.side_effect = stripe.error.APIConnectionError("sem rede")
+        with self.assertLogs("core.services", level="ERROR"):
+            saida = self.correr()
+        self.assertEqual(self.estado("com_sessao"), "pendente")
+        self.assertIn("1 cancelada(s), 1 erro(s)", saida)
+
+    def test_pending_order_with_a_paid_payment_is_never_refunded(self):
+        Pagamento.objects.filter(pk=self.pagamento.pk).update(estado_pagamento="pago")
+        with patch.object(stripe.Refund, "create") as refund, self.assertLogs("core.services", level="ERROR"):
+            saida = self.correr()
+        refund.assert_not_called()
+        self.assertEqual(self.estado("com_sessao"), "pendente")
+        self.assertIn("1 erro(s)", saida)
+
+    def test_legacy_orders_are_reconciled_too(self):
+        utilizador = Utilizador.objects.create(telegram_id="7033", nome="Legado")
+        legado = Encomenda.objects.create(utilizador=utilizador, total=Decimal("50.00"))  # pre-cart: no snapshot
+        LinhaEncomenda.objects.create(encomenda=legado, produto=self.produto, quantidade=1,
+                                      preco_unitario=Decimal("50.00"), subtotal=Decimal("50.00"))
+        envelhecer(Encomenda, legado.pk, "data_encomenda", hours=2)
+        self.correr("--horas", "1")
+        self.assertEqual((Encomenda.objects.get(pk=legado.pk).estado, self.estado("recente")),
+                         ("cancelada", "cancelada"))
 
     def test_second_run_changes_nothing(self):
-        from django.core.management import call_command
-        call_command("cancelar_encomendas_abandonadas", stdout=MagicMock())
-        call_command("cancelar_encomendas_abandonadas", stdout=MagicMock())
-        self.post.assert_called_once()
-        self.assertEqual(MovimentoStock.objects.filter(tipo_movimento="entrada").count(), 1)
+        self.correr()
+        saida = self.correr()
+        self.assertEqual(self.post.call_count, 2)
+        self.assertEqual(MovimentoStock.objects.filter(tipo_movimento="entrada").count(), 2)
+        self.assertIn("0 confirmada(s), 0 cancelada(s), 0 erro(s)", saida)
 
-    def test_order_that_got_a_session_meanwhile_is_kept(self):
-        Pagamento.objects.create(encomenda=self.encomendas["velha"], metodo="stripe",
-                                 valor=Decimal("10.00"), estado_pagamento="pendente", stripe_session_id="cs_novo")
-        self.assertIsNone(services.cancelar_se_abandonada(self.encomendas["velha"].id))
-        self.assertEqual(self.estado("velha"), "pendente")
-
-    def test_threshold_is_configurable(self):
-        from django.core.management import call_command
-        call_command("cancelar_encomendas_abandonadas", "--horas", "1", stdout=MagicMock())
-        self.assertEqual((self.estado("velha"), self.estado("recente")), ("cancelada", "cancelada"))
+    def test_order_settled_meanwhile_is_skipped(self):
+        Encomenda.objects.filter(pk=self.encomendas["velha"].pk).update(estado="confirmada")
+        self.assertEqual(services.reconciliar_encomenda(self.encomendas["velha"].id), (None, None))
 
 
 class CancelarAbandonadasArgumentosTests(TestCase):
@@ -1272,7 +1398,7 @@ class CancelarAbandonadasArgumentosTests(TestCase):
     def test_zero_or_negative_hours_are_rejected_before_any_change(self):
         from django.core.management import CommandError, call_command
         produto = criar_produto(stock=5)
-        _, encomenda = services.reservar_encomenda(utilizador_telegram(7040), produto.id, nova_chave())
+        _, encomenda = reservar(utilizador_telegram(7040), produto.id)
         for horas in ("0", "-1"):
             with self.assertRaisesMessage(CommandError, "--horas"):
                 call_command("cancelar_encomendas_abandonadas", "--horas", horas, stdout=MagicMock())

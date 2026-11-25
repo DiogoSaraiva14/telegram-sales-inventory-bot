@@ -45,6 +45,19 @@ ESTADO_EMOJI = {
 
 MENSAGEM_MENU_EXPIRADO = "Este menu já não está disponível. Abre o catálogo novamente."
 MENSAGEM_ECRA_EXPIRADO = "Este ecrã expirou. Abre o produto novamente para continuar."
+MENSAGEM_PEDIDO_INVALIDO = "❌ Pedido inválido."
+MENSAGEM_ENCOMENDA_PENDENTE = (
+    "Já tens uma encomenda por pagar (#{id}). "
+    "Paga-a com o link que recebeste, ou espera que o prazo de pagamento termine."
+)
+MENSAGEM_PRAZO_TERMINADO = "O prazo de pagamento desta encomenda terminou."
+MENSAGEM_ALTERADO = "⚠️ Algo mudou desde que abriste este ecrã. Nada foi encomendado."
+ROTULO_ALTERACAO = {
+    'preco': "⚠️ preço alterado: {antes:.2f}€ → {depois:.2f}€",
+    'stock': "⚠️ sem stock suficiente",
+    'inativo': "⚠️ indisponível",
+    'removido': "⚠️ indisponível",
+}
 MENSAGEM_FALHA_REGISTO = "❌ Não foi possível registar a encomenda. Tenta novamente."
 MENSAGEM_JA_REGISTADA = "Esta encomenda já foi registada."
 MENSAGEM_PAGAMENTO_A_CONFIRMAR = (
