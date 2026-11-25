@@ -34,6 +34,27 @@ def _texto_stock(p):
     return f"📊 *Stock — {md(p.nome, '*')}*\n\nStock atual: *{p.stock_atual}* unidades\n\nAjusta o stock:"
 
 
+def _numero_pagina(data, prefixo):
+    """Page number from <prefixo><n>; 0 for the plain list button or anything malformed."""
+    valor = data[len(prefixo):] if data.startswith(prefixo) else "0"
+    return int(valor) if valor.isdecimal() and len(valor) <= 4 else 0
+
+
+async def _lista(query, context, data, prefixo, obter, teclado, titulo, legenda, vazio):
+    """One page of an admin list; a page past the end shows the first page."""
+    pagina = _numero_pagina(data, prefixo)
+    linhas, ha_mais = await obter(pagina)
+    if not linhas and pagina:
+        pagina = 0
+        linhas, ha_mais = await obter(0)
+    if not linhas:
+        await responder(query, context, vazio, kb.teclado_voltar_admin())
+        return
+    if pagina or ha_mais:
+        titulo += f" · página {pagina + 1}"
+    await responder(query, context, f"{titulo}\n{legenda}", teclado(linhas, pagina, ha_mais))
+
+
 # ── Menu ───────────────────────────────────────────────────────────────────
 
 def titulo_admin(loja):
@@ -47,15 +68,9 @@ async def admin_menu(query, context, data, user_id):
 # ── Produtos ───────────────────────────────────────────────────────────────
 
 async def produtos(query, context, data, user_id):
-    produtos = await services.get_todos_produtos()
-    if not produtos:
-        await responder(query, context, "📦 Sem produtos na base de dados.", kb.teclado_voltar_admin())
-        return
-    await responder(
-        query, context,
-        "📦 *Gestão de Produtos*\n✅ = ativo | ❌ = inativo\n\nEscolhe um produto:",
-        kb.teclado_produtos_admin(produtos)
-    )
+    await _lista(query, context, data, "admin_produtos_p_", services.get_todos_produtos, kb.teclado_produtos_admin,
+                 "📦 *Gestão de Produtos*", "✅ = ativo | ❌ = inativo\n\nEscolhe um produto:",
+                 "📦 Sem produtos na base de dados.")
 
 async def produto_detalhe(query, context, data, user_id):
     try:
@@ -81,13 +96,9 @@ async def produto_toggle(query, context, data, user_id):
 # ── Stock ──────────────────────────────────────────────────────────────────
 
 async def stock(query, context, data, user_id):
-    produtos = await services.get_todos_produtos()
-    if not produtos:
-        await responder(query, context, "📦 Sem produtos na base de dados.", kb.teclado_voltar_admin())
-        return
-    await responder(query, context,
-                    "📊 *Gestão de Stock*\nEscolhe um produto para ajustar:",
-                    kb.teclado_stock_lista(produtos))
+    await _lista(query, context, data, "admin_stock_p_", services.get_todos_produtos, kb.teclado_stock_lista,
+                 "📊 *Gestão de Stock*", "Escolhe um produto para ajustar:",
+                 "📦 Sem produtos na base de dados.")
 
 async def stock_produto(query, context, data, user_id):
     try:
@@ -118,15 +129,10 @@ async def stock_ajuste(query, context, data, user_id):
 # ── Encomendas ─────────────────────────────────────────────────────────────
 
 async def encomendas(query, context, data, user_id):
-    encomendas = await services.get_encomendas_ativas()
-    if not encomendas:
-        await responder(query, context, "📋 Sem encomendas activas de momento.", kb.teclado_voltar_admin())
-        return
-    await responder(
-        query, context,
-        f"📋 *Encomendas Activas* ({len(encomendas)})\n\nEscolhe uma encomenda para gerir:",
-        kb.teclado_encomendas_admin(encomendas)
-    )
+    await _lista(query, context, data, "admin_encomendas_p_", services.get_encomendas_ativas,
+                 kb.teclado_encomendas_admin, "📋 *Encomendas Activas*",
+                 "Mais antigas primeiro.\n\nEscolhe uma encomenda para gerir:",
+                 "📋 Sem encomendas activas de momento.")
 
 async def encomenda_detalhe(query, context, data, user_id):
     try:
@@ -222,15 +228,10 @@ def _mudar_estado(novo_estado: str, label_acao: str):
 # ── Utilizadores ───────────────────────────────────────────────────────────
 
 async def utilizadores(query, context, data, user_id):
-    utilizadores = await services.get_todos_utilizadores()
-    if not utilizadores:
-        await responder(query, context, "👥 Sem utilizadores registados.", kb.teclado_voltar_admin())
-        return
-    await responder(
-        query, context,
-        "👥 *Gestão de Utilizadores*\n✅ = ativo | 🚫 = bloqueado\n\nEscolhe um utilizador:",
-        kb.teclado_utilizadores_admin(utilizadores)
-    )
+    await _lista(query, context, data, "admin_utilizadores_p_", services.get_todos_utilizadores,
+                 kb.teclado_utilizadores_admin, "👥 *Gestão de Utilizadores*",
+                 "✅ = ativo | 🚫 = bloqueado\n\nEscolhe um utilizador:",
+                 "👥 Sem utilizadores registados.")
 
 async def utilizador_toggle(query, context, data, user_id):
     tid = data[len("admin_utilizador_"):]
@@ -264,8 +265,7 @@ def _texto_registo(r):
 
 async def auditoria(query, context, data, user_id):
     """Newest first, 10 per page; admin_auditoria_p_<n> opens page n (0 is the newest)."""
-    valor = data[len("admin_auditoria_p_"):] if data.startswith("admin_auditoria_p_") else "0"
-    pagina = int(valor) if valor.isdecimal() and len(valor) <= 4 else 0
+    pagina = _numero_pagina(data, "admin_auditoria_p_")
     registos, ha_mais_antigos = await services.get_registos_auditoria(pagina)
     if not registos:
         texto = "📜 Sem registos de auditoria." if pagina == 0 else "📜 Não há registos mais antigos."
@@ -299,4 +299,8 @@ PREFIX_ROUTES = (
     ("admin_enc_cancelar_", _mudar_estado('cancelada', 'CANCELAR')),
     ("admin_utilizador_", utilizador_toggle),
     ("admin_auditoria_p_", auditoria),
+    ("admin_produtos_p_", produtos),
+    ("admin_stock_p_", stock),
+    ("admin_encomendas_p_", encomendas),
+    ("admin_utilizadores_p_", utilizadores),
 )

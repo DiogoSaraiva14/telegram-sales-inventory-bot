@@ -1437,7 +1437,7 @@ class CategoriaServicosTests(TestCase):
         segunda = Categoria.objects.create(nome="Segunda", ordem=2)
         criar_produto(nome="A", categoria=segunda)
         criar_produto(nome="B", categoria=primeira)
-        nomes = [p.nome for p in async_to_sync(services.get_todos_produtos)()]
+        nomes = [p.nome for p in async_to_sync(services.get_todos_produtos)()[0]]
         self.assertEqual(nomes, ["B", "A"])
 
     def test_category_with_products_cannot_be_deleted(self):
@@ -1817,3 +1817,23 @@ class AuditoriaPaginasTests(TestCase):
         self.assertEqual(([r.acao for r in pagina0[:2]], len(pagina0), mais0), (["A24", "A23"], 10, True))
         self.assertEqual(([r.acao for r in pagina2], mais2), ([f"A{i:02d}" for i in range(4, -1, -1)], False))
         self.assertEqual(services.registos_auditoria(3), ([], False))
+
+
+class ListasAdminPaginasTests(TestCase):
+
+    def test_admin_lists_come_in_pages_of_ten(self):
+        cat = Categoria.objects.create(nome="Paginas")
+        for i in range(12):
+            criar_produto(nome=f"P{i:02d}", categoria=cat)
+        primeira, mais = async_to_sync(services.get_todos_produtos)(0)
+        segunda, mais2 = async_to_sync(services.get_todos_produtos)(1)
+        self.assertEqual((len(primeira), mais, len(segunda), mais2), (10, True, 2, False))
+        self.assertEqual([p.nome for p in primeira + segunda], [f"P{i:02d}" for i in range(12)])
+
+    def test_order_list_pages_only_hold_active_orders(self):
+        cliente = Utilizador.objects.create(telegram_id="555", nome="Pagina")
+        for estado in ("pendente", "confirmada", "enviada", "entregue", "cancelada"):
+            Encomenda.objects.create(utilizador=cliente, estado=estado, total=Decimal("1.00"))
+        linhas, mais = async_to_sync(services.get_encomendas_ativas)(0)
+        self.assertEqual(([e.estado for e in linhas], mais), (["pendente", "confirmada", "enviada"], False))
+        self.assertEqual(async_to_sync(services.get_todos_utilizadores)(1), ([], False))

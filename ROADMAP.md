@@ -77,7 +77,7 @@ The plan is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_
 - Replace duplicated Telegram/Django admin business logic with shared operations.
 - Give state-changing operations explicit inputs/outputs and audit behavior.
 - Rate and session state are bounded and single-process (SEC-09). Externalize them only if the bot moves to webhook mode with several workers.
-- Paginate product, customer, and order lists.
+- Paginate product, customer, and order lists. (Done: the Telegram admin product, stock, order, customer and audit lists show 10 per page.)
 
 **Done when:** handlers are thin and core business behavior can be tested without a live Telegram or Stripe account.
 

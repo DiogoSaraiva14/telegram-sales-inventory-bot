@@ -147,17 +147,22 @@ def teclado_admin_menu():
         [InlineKeyboardButton("🔙 Menu Principal", callback_data="menu_inicio")],
     ])
 
-def teclado_auditoria(pagina, ha_mais_antigos):
+def _com_paginas(buttons, prefixo, pagina, ha_mais, anterior="⬅️ Anterior", seguinte="Seguinte ➡️"):
+    """Add the page buttons (prefixo + page number) and the back button to an admin list."""
     navegacao = []
     if pagina > 0:
-        navegacao.append(InlineKeyboardButton("⬅️ Mais recentes", callback_data=f"admin_auditoria_p_{pagina - 1}"))
-    if ha_mais_antigos:
-        navegacao.append(InlineKeyboardButton("Mais antigos ➡️", callback_data=f"admin_auditoria_p_{pagina + 1}"))
-    buttons = [navegacao] if navegacao else []
+        navegacao.append(InlineKeyboardButton(anterior, callback_data=f"{prefixo}{pagina - 1}"))
+    if ha_mais:
+        navegacao.append(InlineKeyboardButton(seguinte, callback_data=f"{prefixo}{pagina + 1}"))
+    if navegacao:
+        buttons.append(navegacao)
     buttons.append([InlineKeyboardButton("🔙 Painel Admin", callback_data="admin_menu")])
     return InlineKeyboardMarkup(buttons)
 
-def teclado_produtos_admin(produtos):
+def teclado_auditoria(pagina, ha_mais_antigos):
+    return _com_paginas([], "admin_auditoria_p_", pagina, ha_mais_antigos, "⬅️ Mais recentes", "Mais antigos ➡️")
+
+def teclado_produtos_admin(produtos, pagina=0, ha_mais=False):
     buttons = []
     for p in produtos:
         estado = "✅" if p.ativo else "❌"
@@ -165,8 +170,7 @@ def teclado_produtos_admin(produtos):
             f"{estado} {p.nome} — {p.preco:.2f}€",
             callback_data=f"admin_produto_detalhe_{p.id}"
         )])
-    buttons.append([InlineKeyboardButton("🔙 Painel Admin", callback_data="admin_menu")])
-    return InlineKeyboardMarkup(buttons)
+    return _com_paginas(buttons, "admin_produtos_p_", pagina, ha_mais)
 
 def teclado_produto_acao(produto):
     toggle_label = "❌ Desativar" if produto.ativo else "✅ Ativar"
@@ -176,14 +180,13 @@ def teclado_produto_acao(produto):
         [InlineKeyboardButton("🔙 Lista de Produtos", callback_data="admin_produtos")],
     ])
 
-def teclado_stock_lista(produtos):
+def teclado_stock_lista(produtos, pagina=0, ha_mais=False):
     buttons = [
         [InlineKeyboardButton(f"{p.nome} — {p.stock_atual} un.",
                               callback_data=f"admin_stock_produto_{p.id}")]
         for p in produtos
     ]
-    buttons.append([InlineKeyboardButton("🔙 Painel Admin", callback_data="admin_menu")])
-    return InlineKeyboardMarkup(buttons)
+    return _com_paginas(buttons, "admin_stock_p_", pagina, ha_mais)
 
 def teclado_stock_ajuste(produto_id):
     return InlineKeyboardMarkup([
@@ -200,7 +203,7 @@ def teclado_stock_ajuste(produto_id):
         [InlineKeyboardButton("🔙 Voltar ao Produto", callback_data=f"admin_produto_detalhe_{produto_id}")],
     ])
 
-def teclado_utilizadores_admin(utilizadores):
+def teclado_utilizadores_admin(utilizadores, pagina=0, ha_mais=False):
     buttons = []
     for u in utilizadores:
         estado = "✅" if u.ativo else "🚫"
@@ -208,10 +211,9 @@ def teclado_utilizadores_admin(utilizadores):
             f"{estado} {u.nome} (@{u.username or 'sem username'})",
             callback_data=f"admin_utilizador_{u.telegram_id}"
         )])
-    buttons.append([InlineKeyboardButton("🔙 Painel Admin", callback_data="admin_menu")])
-    return InlineKeyboardMarkup(buttons)
+    return _com_paginas(buttons, "admin_utilizadores_p_", pagina, ha_mais)
 
-def teclado_encomendas_admin(encomendas):
+def teclado_encomendas_admin(encomendas, pagina=0, ha_mais=False):
     buttons = []
     for e in encomendas:
         emoji = ESTADO_EMOJI.get(e.estado, '📦')
@@ -219,8 +221,7 @@ def teclado_encomendas_admin(encomendas):
             f"{emoji} #{e.id} — {e.utilizador.nome} — {e.total:.2f}€ [{e.estado}]",
             callback_data=f"admin_ver_encomenda_{e.id}"
         )])
-    buttons.append([InlineKeyboardButton("🔙 Painel Admin", callback_data="admin_menu")])
-    return InlineKeyboardMarkup(buttons)
+    return _com_paginas(buttons, "admin_encomendas_p_", pagina, ha_mais)
 
 def teclado_acoes_encomenda(encomenda):
     buttons = []
