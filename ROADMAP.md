@@ -73,7 +73,7 @@ The plan is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_
 
 ## Phase 3 — Refactor for maintainability
 
-- Split bot.py into routing, keyboards/presentation, and domain services. (Done: telegram_bot/ and core/services.py. Bot checkout is transactional; the admin helpers are not yet.)
+- Split bot.py into routing, keyboards/presentation, and domain services. (Done: telegram_bot/ and core/services.py. Bot checkout is transactional, and so are the Telegram admin product, stock and customer actions, each with its audit row in the same transaction.)
 - Replace duplicated Telegram/Django admin business logic with shared operations.
 - Give state-changing operations explicit inputs/outputs and audit behavior.
 - Rate and session state are bounded and single-process (SEC-09). Externalize them only if the bot moves to webhook mode with several workers.

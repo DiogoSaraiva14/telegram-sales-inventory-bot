@@ -1235,10 +1235,9 @@ class AdminInvariantTests(TestCase):
     def test_a7_telegram_toggle_and_stock_buttons_keep_a_concurrent_checkout(self):
         produto = Produto.objects.get(pk=self.produto.pk)  # stock 4 in memory
         Produto.objects.filter(pk=produto.pk).update(stock_atual=2)
-        async_to_sync(services.alternar_produto_ativo)(produto)
+        services.alternar_produto_ativo(produto.pk, None)
         self.assertEqual(Produto.objects.get(pk=produto.pk).stock_atual, 2)
-        async_to_sync(services.ajustar_stock_manual)(produto, 1)
-        self.assertEqual(produto.stock_atual, 3)
+        self.assertEqual(services.ajustar_stock_admin(produto.pk, 1, None).stock_atual, 3)
         self.assertEqual(Produto.objects.get(pk=produto.pk).stock_atual, 3)
 
 
@@ -1837,3 +1836,48 @@ class ListasAdminPaginasTests(TestCase):
         linhas, mais = async_to_sync(services.get_encomendas_ativas)(0)
         self.assertEqual(([e.estado for e in linhas], mais), (["pendente", "confirmada", "enviada"], False))
         self.assertEqual(async_to_sync(services.get_todos_utilizadores)(1), ([], False))
+
+
+class AcoesAdminTransacionaisTests(TestCase):
+    """Telegram admin actions change the row and write their audit row together, or not at all."""
+
+    def setUp(self):
+        self.admin = Utilizador.objects.create(telegram_id="900", nome="Admin")
+        self.cliente = Utilizador.objects.create(telegram_id="901", nome="Cliente")
+        self.produto = criar_produto(nome="Atomico", stock=5)
+
+    def ultimo_registo(self):
+        r = RegistoAuditoria.objects.latest("id")
+        return r.acao, r.utilizador_id, r.descricao
+
+    def test_each_action_writes_its_audit_row_with_the_admin(self):
+        self.assertFalse(services.alternar_produto_ativo(self.produto.pk, 900).ativo)
+        self.assertEqual(self.ultimo_registo(), ("DESATIVAR_PRODUTO", self.admin.pk, f"Atomico (id={self.produto.pk})"))
+        self.assertEqual(services.ajustar_stock_admin(self.produto.pk, -2, 900).stock_atual, 3)
+        self.assertEqual(self.ultimo_registo(), ("AJUSTE_STOCK", self.admin.pk, "Atomico: delta=-2, novo stock=3"))
+        utilizador, ativo = services.alternar_utilizador_ativo("901", 900)
+        self.assertEqual((utilizador.pk, ativo), (self.cliente.pk, False))
+        self.assertEqual(self.ultimo_registo(), ("BLOQUEAR_UTILIZADOR", self.admin.pk, "Cliente (telegram_id=901)"))
+
+    def test_an_admin_without_a_customer_row_is_still_audited(self):
+        services.alternar_produto_ativo(self.produto.pk, 12345)
+        self.assertEqual(self.ultimo_registo()[:2], ("DESATIVAR_PRODUTO", None))
+
+    def test_a_failed_audit_rolls_the_change_back(self):
+        with patch.object(services.RegistoAuditoria.objects, "create", side_effect=DatabaseError("falhou")):
+            for acao in (lambda: services.alternar_produto_ativo(self.produto.pk, 900),
+                         lambda: services.ajustar_stock_admin(self.produto.pk, 3, 900),
+                         lambda: services.alternar_utilizador_ativo("901", 900)):
+                with self.assertRaises(DatabaseError):
+                    acao()
+        self.produto.refresh_from_db()
+        self.cliente.refresh_from_db()
+        self.assertEqual((self.produto.ativo, self.produto.stock_atual, self.cliente.ativo), (True, 5, True))
+        self.assertFalse(MovimentoStock.objects.filter(produto=self.produto).exists())
+
+    def test_toggles_read_the_current_row_not_a_stale_copy(self):
+        Produto.objects.filter(pk=self.produto.pk).update(ativo=False)  # another admin just deactivated it
+        self.assertTrue(services.alternar_produto_ativo(self.produto.pk, 900).ativo)
+        Utilizador.objects.filter(pk=self.cliente.pk).update(e_admin=True)
+        services.alternar_utilizador_ativo("901", 900)
+        self.assertTrue(Utilizador.objects.get(pk=self.cliente.pk).e_admin)  # blocking keeps other fields

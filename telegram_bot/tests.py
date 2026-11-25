@@ -612,8 +612,7 @@ class AdminUserToggleTests(SimpleTestCase):
     async def test_name_with_markdown_characters_is_shown_as_is(self):
         responder = AsyncMock()
         utilizador = SimpleNamespace(nome="Ana *Silva*_x")
-        with patch.object(admin.services, "toggle_utilizador_ativo", AsyncMock(return_value=(utilizador, False))), \
-             patch.object(admin.services, "registar_auditoria", AsyncMock()), \
+        with patch.object(admin.services, "alternar_utilizador_ativo_async", AsyncMock(return_value=(utilizador, False))), \
              patch.object(admin, "responder", responder):
             await admin.utilizador_toggle(MagicMock(), MagicMock(), "admin_utilizador_123", 1)
         texto = responder.await_args.args[2]
