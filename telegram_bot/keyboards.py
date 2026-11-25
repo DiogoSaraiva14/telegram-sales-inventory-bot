@@ -147,6 +147,16 @@ def teclado_admin_menu():
         [InlineKeyboardButton("🔙 Menu Principal", callback_data="menu_inicio")],
     ])
 
+def teclado_auditoria(pagina, ha_mais_antigos):
+    navegacao = []
+    if pagina > 0:
+        navegacao.append(InlineKeyboardButton("⬅️ Mais recentes", callback_data=f"admin_auditoria_p_{pagina - 1}"))
+    if ha_mais_antigos:
+        navegacao.append(InlineKeyboardButton("Mais antigos ➡️", callback_data=f"admin_auditoria_p_{pagina + 1}"))
+    buttons = [navegacao] if navegacao else []
+    buttons.append([InlineKeyboardButton("🔙 Painel Admin", callback_data="admin_menu")])
+    return InlineKeyboardMarkup(buttons)
+
 def teclado_produtos_admin(produtos):
     buttons = []
     for p in produtos:

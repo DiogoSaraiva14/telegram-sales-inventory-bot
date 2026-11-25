@@ -17,7 +17,9 @@ _rate_data: dict[int, list[float]] = defaultdict(list)
 _rate_lock = asyncio.Lock()
 _ultima_limpeza = 0.0
 
-RATE_LIMIT = 5   # máximo de ações
+# 20 per 10 s: about four times a person tapping fast (5 per 10 s blocked normal browsing
+# in the 2026-11-25 Telegram test), still far below a scripted flood.
+RATE_LIMIT = 20   # máximo de ações
 RATE_WINDOW = 10  # por janela de 10 segundos
 LIMPEZA_INTERVALO = 60  # segundos entre limpezas de utilizadores inativos
 
@@ -49,9 +51,8 @@ def rate_limit(func):
                         "⚠️ Demasiados pedidos. Aguarda alguns segundos."
                     )
                 elif update.callback_query:
-                    await update.callback_query.answer(
-                        "⚠️ Demasiados pedidos. Aguarda.", show_alert=True
-                    )
+                    # A toast, not a pop-up the customer has to dismiss.
+                    await update.callback_query.answer("⚠️ Demasiados pedidos. Aguarda um momento.")
                 return
             _rate_data[user_id].append(agora)
 

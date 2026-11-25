@@ -33,6 +33,26 @@ MENSAGENS_NOTIFICACAO = {
     ),
 }
 
+# Audit actions as admins read them; an unknown code is shown as it is stored.
+ROTULO_AUDITORIA = {
+    'CRIAR_ENCOMENDA': "🛒 Encomenda criada",
+    'PAGAMENTO_CONFIRMADO': "💳 Pagamento confirmado",
+    'PAGAMENTO_EXPIRADO': "⌛ Pagamento expirado",
+    'PAGAMENTO_REEMBOLSADO': "↩️ Pagamento reembolsado",
+    'CANCELAR_ENCOMENDA': "❌ Encomenda cancelada",
+    'CANCELAR_ENCOMENDA_EXPIRADA': "⌛ Encomenda cancelada (prazo de pagamento)",
+    'ENCOMENDA_ENVIADA': "🚚 Encomenda enviada",
+    'ENCOMENDA_ENTREGUE': "📬 Encomenda entregue",
+    'ADMIN_ENVIAR_ENCOMENDA': "🚚 Encomenda enviada (painel Telegram)",
+    'ADMIN_ENTREGAR_ENCOMENDA': "📬 Encomenda entregue (painel Telegram)",
+    'ADMIN_CANCELAR_ENCOMENDA': "❌ Encomenda cancelada (painel Telegram)",
+    'AJUSTE_STOCK': "📊 Ajuste de stock",
+    'ATIVAR_PRODUTO': "✅ Produto ativado",
+    'DESATIVAR_PRODUTO': "🚫 Produto desativado",
+    'BLOQUEAR_UTILIZADOR': "🚫 Utilizador bloqueado",
+    'DESBLOQUEAR_UTILIZADOR': "✅ Utilizador desbloqueado",
+}
+
 ESTADO_EMOJI = {
     'pendente': '🕐',
     'confirmada': '✅',

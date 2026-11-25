@@ -1805,3 +1805,15 @@ class DefinicoesHttpsTests(TestCase):
         desligado = self.ler(DJANGO_HTTPS="False", CSRF_TRUSTED_ORIGINS="")
         self.assertNotIn("SECURE_SSL_REDIRECT", desligado)
         self.assertEqual(desligado["CSRF_TRUSTED_ORIGINS"], [])
+
+
+class AuditoriaPaginasTests(TestCase):
+
+    def test_pages_of_ten_newest_first(self):
+        for i in range(25):
+            RegistoAuditoria.objects.create(acao=f"A{i:02d}", entidade="Teste")
+        pagina0, mais0 = services.registos_auditoria(0)
+        pagina2, mais2 = services.registos_auditoria(2)
+        self.assertEqual(([r.acao for r in pagina0[:2]], len(pagina0), mais0), (["A24", "A23"], 10, True))
+        self.assertEqual(([r.acao for r in pagina2], mais2), ([f"A{i:02d}" for i in range(4, -1, -1)], False))
+        self.assertEqual(services.registos_auditoria(3), ([], False))
