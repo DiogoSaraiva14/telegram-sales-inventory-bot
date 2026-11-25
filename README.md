@@ -109,7 +109,27 @@ These features are covered by automated tests with Telegram and Stripe mocked. T
 
 ## Stack
 
-Python, Django, PostgreSQL, python-telegram-bot, Stripe, Pillow, and python-dotenv. Exact pinned package versions are in requirements.txt. The supported Python version and deployment topology are not documented.
+Python 3.13, Django, PostgreSQL 17, python-telegram-bot, Stripe, httpx, Pillow, and python-dotenv. Deployment is described in [DEPLOYMENT.md](DEPLOYMENT.md).
+
+## Updating dependencies
+
+- `requirements.in` lists only the packages the code imports, each with a range that stays within one major version (one minor for Django and httpx).
+- `requirements.txt` pins every installed package, including the ones those pull in (for example, `stripe` needs `requests`). Install from it; don't edit it by hand.
+
+**When:** check monthly, and at once for a security advisory on any pinned package (`pip list --outdated` in the project's venv). Read the release notes of any direct package that changes.
+
+**How:**
+1. To move a package beyond its range, change the range in `requirements.in` first.
+2. Regenerate the pins in a clean venv:
+   ```powershell
+   python -m venv $env:TEMP\deps
+   & $env:TEMP\deps\Scripts\python -m pip install -r requirements.in
+   & $env:TEMP\deps\Scripts\python -m pip freeze | Out-File -Encoding ascii requirements.txt
+   ```
+   (`Out-File -Encoding ascii`, because `>` in Windows PowerShell writes UTF-16, which pip can't read.)
+   Then put back the two header lines at the top of `requirements.txt`.
+3. Run the test suite and `manage.py makemigrations --check`, and open a PR. CI runs both.
+4. Update the third-party licence table in [docs/stage0_checklist.md](docs/stage0_checklist.md) if a package was added or changed licence.
 
 ## Source and migration notes
 

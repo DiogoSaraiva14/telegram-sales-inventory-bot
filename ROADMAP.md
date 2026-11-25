@@ -88,7 +88,7 @@ The plan is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_
 - Define HTTPS, trusted-host, cookie, and webhook deployment settings.
 - Review PII in logs and audit descriptions; document retention and access.
 - Escape dynamic Telegram Markdown, validate uploaded images, and avoid repeated lossy image conversion.
-- Pin only intentional direct dependencies and document update policy.
+- Pin only intentional direct dependencies and document update policy. (Done: `requirements.in` lists the direct packages, `requirements.txt` is generated from it, and README.md has the update policy.)
 
 **Done when:** security configuration is explicit, operational errors are observable without leaking secrets, and deployment procedures are documented.
 
