@@ -15,7 +15,7 @@ from django.db.models import F
 from django.utils import timezone
 
 from core.models import (
-    Utilizador, Produto, Encomenda, LinhaEncomenda,
+    Utilizador, Categoria, Produto, Encomenda, LinhaEncomenda,
     MovimentoStock, RegistoAuditoria, Pagamento,
 )
 from security.sanitization import validar_telegram_id, sanitizar_nome_utilizador
@@ -55,20 +55,27 @@ async def toggle_utilizador_ativo(telegram_id: str) -> tuple:
 
 # ── Produtos e stock ───────────────────────────────────────────────────────
 
-async def get_produtos_por_categoria(categoria):
+async def get_categorias_ativas():
+    return await sync_to_async(list)(Categoria.objects.filter(ativo=True))
+
+async def get_categoria_ativa(categoria_id: int):
+    """The active category with this id, or None (old or deactivated buttons)."""
+    return await Categoria.objects.filter(pk=categoria_id, ativo=True).afirst()
+
+async def get_produtos_por_categoria(categoria_id: int):
     return await sync_to_async(list)(
-        Produto.objects.filter(ativo=True, categoria=categoria).order_by('nome')
+        Produto.objects.filter(ativo=True, categoria_id=categoria_id, categoria__ativo=True).order_by('nome')
     )
 
 async def get_produto(produto_id: int):
     return await sync_to_async(Produto.objects.get)(id=produto_id, ativo=True)
 
 async def get_produto_admin(produto_id: int):
-    return await sync_to_async(Produto.objects.get)(id=produto_id)
+    return await sync_to_async(Produto.objects.select_related('categoria').get)(id=produto_id)
 
 async def get_todos_produtos():
     return await sync_to_async(list)(
-        Produto.objects.all().order_by('categoria', 'nome')
+        Produto.objects.select_related('categoria').order_by('categoria__ordem', 'categoria__nome', 'nome')
     )
 
 async def alternar_produto_ativo(produto):

@@ -12,8 +12,8 @@ from core import services
 from security.sanitization import sanitizar_id, EntradaInvalida
 from telegram_bot import confirmacao
 from telegram_bot.constants import (
-    CATEGORIAS, ESTADO_EMOJI, MENSAGEM_ECRA_EXPIRADO, MENSAGEM_FALHA_REGISTO,
-    MENSAGEM_JA_REGISTADA, MENSAGEM_PAGAMENTO_A_CONFIRMAR,
+    ESTADO_EMOJI, MENSAGEM_ECRA_EXPIRADO, MENSAGEM_FALHA_REGISTO,
+    MENSAGEM_JA_REGISTADA, MENSAGEM_MENU_EXPIRADO, MENSAGEM_PAGAMENTO_A_CONFIRMAR,
 )
 from telegram_bot.ui import md, responder
 from telegram_bot import keyboards as kb
@@ -28,19 +28,23 @@ async def menu_inicio(query, context, data, user_id):
 
 async def menu_catalogo(query, context, data, user_id):
     await responder(query, context, "🛍️ *Catálogo*\nEscolhe uma categoria:",
-                    kb.teclado_catalogo())
+                    kb.teclado_catalogo(await services.get_categorias_ativas()))
 
 
 async def categoria(query, context, data, user_id):
-    categoria = data[4:]
-    nome_cat = CATEGORIAS.get(categoria, "Categoria")
-    produtos = await services.get_produtos_por_categoria(categoria)
+    valor = data[4:]
+    # Old code buttons (cat_ssd) and deactivated categories get a clear message, not an error.
+    cat = await services.get_categoria_ativa(int(valor)) if valor.isdecimal() and valor[0] != "0" else None
+    if cat is None:
+        await responder(query, context, MENSAGEM_MENU_EXPIRADO, kb.teclado_voltar_catalogo(), parse_mode=None)
+        return
+    produtos = await services.get_produtos_por_categoria(cat.id)
     if not produtos:
         await responder(query, context,
-                        f"😔 Sem produtos disponíveis em *{nome_cat}*.",
+                        f"😔 Sem produtos disponíveis em *{md(cat.nome, '*')}*.",
                         kb.teclado_voltar_catalogo())
         return
-    await responder(query, context, f"{nome_cat}\nEscolhe um produto:",
+    await responder(query, context, f"{cat.nome}\nEscolhe um produto:",
                     kb.teclado_produtos_categoria(produtos), parse_mode=None)
 
 
@@ -238,7 +242,7 @@ async def confirmar_encomenda(query, context, data, user_id):
     except Exception:
         logger.exception("Falha ao registar encomenda: produto_id=%s etapa=reservar", p.id)
         await _mostrar(query, context, MENSAGEM_FALHA_REGISTO,
-                       kb.teclado_falha_registo(data, p.categoria), parse_mode=None)
+                       kb.teclado_falha_registo(data, p.categoria_id), parse_mode=None)
         return
     if resultado == "existente":
         # Lost a race with the same token. Recover too: the winner may have stopped

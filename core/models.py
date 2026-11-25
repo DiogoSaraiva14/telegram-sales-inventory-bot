@@ -28,24 +28,31 @@ class Utilizador(models.Model):
         ordering        = ['nome']
 
 
+# ── Categoria ──────────────────────────────────────────────────────────────
+
+class Categoria(models.Model):
+    """Shop data edited in Django admin. Deactivated, never deleted, so ids are never reused."""
+    nome  = models.CharField(max_length=60)
+    ordem = models.PositiveIntegerField(default=0)
+    ativo = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.nome
+
+    class Meta:
+        db_table            = 'categoria'
+        verbose_name        = "Categoria"
+        verbose_name_plural = "Categorias"
+        ordering            = ['ordem', 'nome']
+
+
 # ── Produto ────────────────────────────────────────────────────────────────
 
 class Produto(models.Model):
 
-    CATEGORIA_CHOICES = [
-        ('cpu',         'Processadores'),
-        ('gpu',         'Placas Gráficas'),
-        ('ram',         'Memória RAM'),
-        ('ssd',         'Armazenamento'),
-        ('motherboard', 'Motherboards'),
-        ('psu',         'Fontes de Alimentação'),
-        ('caixa',       'Caixas'),
-        ('cooling',     'Coolers'),
-    ]
-
     nome        = models.CharField(max_length=200)
     descricao   = models.TextField(blank=True, null=True)
-    categoria   = models.CharField(max_length=20, choices=CATEGORIA_CHOICES, default='cpu')
+    categoria   = models.ForeignKey(Categoria, on_delete=models.PROTECT, related_name='produtos')
     preco       = models.DecimalField(max_digits=10, decimal_places=2)
     stock_atual = models.IntegerField(default=0)
     ativo       = models.BooleanField(default=True)

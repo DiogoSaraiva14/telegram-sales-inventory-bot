@@ -2,6 +2,7 @@
 
 Run with: python manage.py test core   (needs the telegram_bot_test role, see README).
 """
+import importlib
 import secrets
 import threading
 import time
@@ -11,14 +12,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import stripe
 from asgiref.sync import async_to_sync, sync_to_async
-from django.db import DatabaseError, IntegrityError, connection, transaction
+from django.db import DatabaseError, IntegrityError, connection, migrations, transaction
+from django.db.migrations.executor import MigrationExecutor
+from django.db.models import ProtectedError
 from django.db.models.query import QuerySet
 from django.forms.models import model_to_dict
 from django.test import TestCase, TransactionTestCase, override_settings
 
 from core import services
 from core.models import (
-    Encomenda, LinhaEncomenda, MovimentoStock, Pagamento, Produto, RegistoAuditoria, Utilizador,
+    Categoria, Encomenda, LinhaEncomenda, MovimentoStock, Pagamento, Produto, RegistoAuditoria, Utilizador,
 )
 from telegram_bot import confirmacao
 from telegram_bot.constants import MENSAGEM_JA_REGISTADA
@@ -33,9 +36,11 @@ def utilizador_telegram(tid=1001, nome="Cliente Teste"):
 
 
 def criar_produto(stock=5, **campos):
+    if "categoria" not in campos:
+        campos["categoria"] = Categoria.objects.get_or_create(nome="Armazenamento")[0]
     return Produto.objects.create(
         nome=campos.pop("nome", "SSD 1TB"), preco=campos.pop("preco", Decimal("50.00")),
-        stock_atual=stock, categoria="ssd", **campos,
+        stock_atual=stock, **campos,
     )
 
 
@@ -1176,13 +1181,13 @@ class ImagemProdutoTests(TestCase):
 
     def test_i1_new_upload_becomes_an_800px_square_jpeg(self):
         from PIL import Image
-        produto = Produto.objects.create(nome="GPU", preco=Decimal("10.00"), stock_atual=3, imagem=self.upload())
+        produto = criar_produto(nome="GPU", preco=Decimal("10.00"), stock=3, imagem=self.upload())
         self.assertTrue(produto.imagem.name.startswith("produtos/") and produto.imagem.name.endswith(".jpg"))
         with produto.imagem.open("rb") as ficheiro, Image.open(ficheiro) as img:
             self.assertEqual((img.format, img.size, img.mode), ("JPEG", (800, 800), "RGB"))
 
     def test_i2_ordinary_saves_leave_the_stored_image_alone(self):
-        produto = Produto.objects.create(nome="GPU", preco=Decimal("10.00"), stock_atual=3, imagem=self.upload())
+        produto = criar_produto(nome="GPU", preco=Decimal("10.00"), stock=3, imagem=self.upload())
         with produto.imagem.open("rb") as ficheiro:
             antes = ficheiro.read()
         nome = produto.imagem.name
@@ -1197,7 +1202,7 @@ class ImagemProdutoTests(TestCase):
             self.assertEqual(ficheiro.read(), antes)
 
     def test_i3_replacing_the_image_processes_the_new_one(self):
-        produto = Produto.objects.create(nome="GPU", preco=Decimal("10.00"), stock_atual=3, imagem=self.upload())
+        produto = criar_produto(nome="GPU", preco=Decimal("10.00"), stock=3, imagem=self.upload())
         produto.imagem = self.upload(tamanho=(300, 900), nome="nova.png")
         produto.save()
         self.assertTrue(produto.imagem.name.startswith("produtos/nova"))
@@ -1272,3 +1277,81 @@ class CancelarAbandonadasArgumentosTests(TestCase):
             with self.assertRaisesMessage(CommandError, "--horas"):
                 call_command("cancelar_encomendas_abandonadas", "--horas", horas, stdout=MagicMock())
         self.assertEqual(Encomenda.objects.get(pk=encomenda.pk).estado, "pendente")
+
+
+# ── Stage 1: categories in the database ────────────────────────────────────
+
+class CategoriaServicosTests(TestCase):
+
+    def test_active_categories_follow_ordem_then_name(self):
+        Categoria.objects.create(nome="Zeta", ordem=1)
+        Categoria.objects.create(nome="Alfa", ordem=2)
+        Categoria.objects.create(nome="Beta", ordem=1)
+        Categoria.objects.create(nome="Oculta", ordem=0, ativo=False)
+        nomes = [c.nome for c in async_to_sync(services.get_categorias_ativas)()]
+        self.assertEqual(nomes, ["Beta", "Zeta", "Alfa"])
+
+    def test_inactive_or_missing_category_is_none(self):
+        inativa = Categoria.objects.create(nome="Antiga", ativo=False)
+        self.assertIsNone(async_to_sync(services.get_categoria_ativa)(inativa.pk))
+        self.assertIsNone(async_to_sync(services.get_categoria_ativa)(inativa.pk + 1000))
+        ativa = Categoria.objects.create(nome="Nova")
+        self.assertEqual(async_to_sync(services.get_categoria_ativa)(ativa.pk), ativa)
+
+    def test_products_of_inactive_category_are_hidden(self):
+        cat = Categoria.objects.create(nome="Discos")
+        produto = criar_produto(categoria=cat)
+        criar_produto(nome="Inativo", categoria=cat, ativo=False)
+        self.assertEqual(async_to_sync(services.get_produtos_por_categoria)(cat.pk), [produto])
+        Categoria.objects.filter(pk=cat.pk).update(ativo=False)
+        self.assertEqual(async_to_sync(services.get_produtos_por_categoria)(cat.pk), [])
+
+    def test_all_products_sorted_by_category_order(self):
+        primeira = Categoria.objects.create(nome="Primeira", ordem=1)
+        segunda = Categoria.objects.create(nome="Segunda", ordem=2)
+        criar_produto(nome="A", categoria=segunda)
+        criar_produto(nome="B", categoria=primeira)
+        nomes = [p.nome for p in async_to_sync(services.get_todos_produtos)()]
+        self.assertEqual(nomes, ["B", "A"])
+
+    def test_category_with_products_cannot_be_deleted(self):
+        cat = Categoria.objects.create(nome="Protegida")
+        criar_produto(categoria=cat)
+        with self.assertRaises(ProtectedError):
+            cat.delete()
+
+
+class CategoriaMigracaoTests(TransactionTestCase):
+    """0010 maps the old category codes to Categoria rows, run forward on real rows."""
+
+    ANTES = [("core", "0009_categoria")]
+
+    def setUp(self):
+        # 0010 can't be reversed (forward-fix only). Only this test steps back over it,
+        # to an empty database, so its reverse is a no-op here.
+        operacao = importlib.import_module("core.migrations.0010_categoria_dados").Migration.operations[0]
+        patcher = patch.object(operacao, "reverse_code", migrations.RunPython.noop)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.executor = MigrationExecutor(connection)
+        self.addCleanup(self._para_o_fim)
+        self.executor.migrate(self.ANTES)
+
+    def _para_o_fim(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+
+    def test_codes_become_categories(self):
+        antigos = self.executor.loader.project_state(self.ANTES).apps
+        ProdutoAntigo = antigos.get_model("core", "Produto")
+        for nome, codigo in [("Ryzen", "cpu"), ("Intel", "cpu"), ("SSD", "ssd"), ("Monitor", "monitor")]:
+            ProdutoAntigo.objects.create(nome=nome, preco=Decimal("10.00"), categoria=codigo)
+
+        self.executor = MigrationExecutor(connection)
+        self.executor.migrate(self.executor.loader.graph.leaf_nodes())
+
+        categorias = {c.nome: c.ordem for c in Categoria.objects.all()}
+        self.assertEqual(categorias, {"Processadores": 0, "Armazenamento": 3, "monitor": 99})
+        por_produto = dict(Produto.objects.values_list("nome", "categoria__nome"))
+        self.assertEqual(por_produto, {"Ryzen": "Processadores", "Intel": "Processadores",
+                                       "SSD": "Armazenamento", "Monitor": "monitor"})

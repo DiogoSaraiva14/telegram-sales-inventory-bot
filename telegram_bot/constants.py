@@ -1,16 +1,5 @@
 """Static labels and message templates shown to Telegram users."""
 
-CATEGORIAS = {
-    'cpu': '🔲 Processadores',
-    'gpu': '🎮 Placas Gráficas',
-    'ram': '🧠 Memória RAM',
-    'ssd': '💾 Armazenamento',
-    'motherboard': '🖥️ Motherboards',
-    'psu': '⚡ Fontes de Alimentação',
-    'caixa': '🗄️ Caixas',
-    'cooling': '❄️ Coolers',
-}
-
 MENSAGENS_NOTIFICACAO = {
     'confirmada': (
         "✅ *A tua encomenda foi confirmada!*\n\n"
@@ -54,6 +43,7 @@ ESTADO_EMOJI = {
 
 # ── Checkout (SEC-13; owner decisions D7, D8, D14, D21) ───────────────────
 
+MENSAGEM_MENU_EXPIRADO = "Este menu já não está disponível. Abre o catálogo novamente."
 MENSAGEM_ECRA_EXPIRADO = "Este ecrã expirou. Abre o produto novamente para continuar."
 MENSAGEM_FALHA_REGISTO = "❌ Não foi possível registar a encomenda. Tenta novamente."
 MENSAGEM_JA_REGISTADA = "Esta encomenda já foi registada."

@@ -6,7 +6,7 @@ import stripe
 from . import services
 from .views import notificar_estado
 from .models import (
-    Utilizador, Produto, Encomenda,
+    Utilizador, Categoria, Produto, Encomenda,
     LinhaEncomenda, Pagamento, MovimentoStock, RegistoAuditoria
 )  # ← parêntese de fecho em falta no original — BUG #1
 
@@ -36,9 +36,21 @@ class UtilizadorAdmin(admin.ModelAdmin):
         self.message_user(request, f"{atualizados} utilizador(es) desbloqueado(s).", messages.SUCCESS)
 
 
+@admin.register(Categoria)
+class CategoriaAdmin(admin.ModelAdmin):
+    list_display = ['nome', 'ordem', 'ativo']
+    list_editable = ['ordem', 'ativo']
+    list_filter = ['ativo']
+    search_fields = ['nome']
+
+    def has_delete_permission(self, request, obj=None):
+        return False  # deactivate instead: products keep their category and ids are never reused
+
+
 @admin.register(Produto)
 class ProdutoAdmin(admin.ModelAdmin):
     list_display = ['nome', 'categoria', 'preco', 'stock_atual', 'estado_stock', 'ativo', 'data_criacao', 'preview_imagem']
+    list_select_related = ['categoria']
     list_filter = ['ativo', 'categoria']
     search_fields = ['nome']
     readonly_fields = ['data_criacao', 'preview_imagem']
