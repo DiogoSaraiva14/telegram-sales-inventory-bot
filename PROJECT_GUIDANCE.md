@@ -6,13 +6,13 @@ Status: imported baseline under overhaul. Done so far:
 - the product-photo fallback (both committed);
 - duplicate-safe checkout with recoverable Stripe sessions.
 
-All four are merged into `main`.
+All four are merged into `main`, as are the security fixes SEC-01 to SEC-13 and Stages 1–4 of the cart design.
 
 The business rules decided for checkout are recorded below. LocalReach remains the user's main development priority; this Telegram project is being reviewed as a bounded portfolio candidate.
 
 ## Product purpose
 
-A Telegram commerce interface for a computer-parts catalog, connected to inventory and order management in Django/PostgreSQL and payments through Stripe Checkout.
+A Telegram shop with a cart, connected to inventory and order management in Django/PostgreSQL and payments through Stripe Checkout. It is meant to be resold as one copy per client shop.
 
 The strongest potential portfolio story is an end-to-end order and inventory workflow with clear payment-state handling, an admin surface, auditability, automated tests, and reproducible deployment. These capabilities must be demonstrated before describing the application as complete or production-ready.
 
@@ -33,7 +33,7 @@ The strongest potential portfolio story is an end-to-end order and inventory wor
 - **Stock:** reserved when the order is created. Checkout is refused when stock is insufficient, never clamped at zero.
 - **Audit:** written in the same transaction as the order.
 - **Price:** charged as saved on the order (price snapshot), and the product name is snapshotted on the order line. Stripe gets no product description.
-- **Expired sessions:** an expired, unpaid Stripe Checkout Session is replaced with a new one if the customer retries before the expiry webhook arrives. A completed session waiting for the webhook is never replaced; the customer is told not to pay again.
+- **Expired sessions (D19, reversed by the cart design on 2026-11-25):** an expired, unpaid Stripe Checkout Session used to be replaced with a new one if the customer retried before the expiry webhook arrived. Now an expired session cancels the order. A completed session waiting for the webhook is never replaced; the customer is told not to pay again.
 - **Expiry webhook (SEC-04, owner decision, 2026-11-24):** it cancels the unpaid order, returns its stock in the same transaction, and notifies the customer with the existing cancellation message. No scheduler. Orders that never got a session still hold stock.
 - **Cancellation (SEC-06, owner decisions, 2026-11-24):**
   - Cancelling a paid order refunds it in full through Stripe.
@@ -47,15 +47,36 @@ The strongest potential portfolio story is an end-to-end order and inventory wor
   - Admins move orders forward only: confirmada → enviada → entregue.
   - A stock edit in the Django admin is applied as a difference and recorded as a stock movement.
 
-## Business rules to confirm before redesign
+## Decisions recorded for the cart and resellable shop (2026-11-24/25)
 
-- Whether one order may contain multiple products and quantities.
-- When stock is reserved, released, or deducted.
-- How checkout expiry, abandoned orders, payment failures, cancellations, and refunds affect inventory and order state.
-- Whether a paid order may be cancelled and what refund operation is required.
-- Whether checkout prices are snapshotted at order creation.
-- Whether both Telegram admin and Django admin remain supported.
-- Which data is retained, for how long, and what customers are told about it.
+The design is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_shop.md). The brainstorm is concepts_brief_cart.md, and the reviews are consolidated_review_report.md and goldfish_review_report.md.
+
+- **Product:** the package is sold, with its rights, to a reseller. The reseller installs one separate copy per client shop, configured in Django admin without code changes. The part picker is dropped.
+- **Cart:**
+  - stored in the database;
+  - at most 20 lines, 99 per line, and never above the current stock when changed;
+  - stock is taken only at Confirm;
+  - inactive or short-stocked lines are flagged and block checkout, and are not removed automatically;
+  - a price change only marks the line, and the customer pays the price on the confirmation screen.
+- **Confirmation screen:** saved as a snapshot that never changes. Confirm compares it with live data under locks, and writes nothing if anything changed.
+- **One pending order per customer,** including orders from before the cart.
+- **Payment window:** 60 minutes from the order, for every shop. Links are created only until the order is 28 minutes old.
+- **Review decision A:** one reconciling cleanup every 5 minutes, verified during setup, instead of a drain command and a startup block. It cancels and returns stock for unpaid or expired orders, confirms paid ones, and leaves the order and retries on Stripe errors. The 65-minute limit on held stock is a target that assumes the cleanup and its dependencies work; the log is checked daily, with no automatic alert.
+- **Review decision B:** keep "Repetir encomenda" for cancelled unpaid orders. A customer "cancel my pending order" button is deferred.
+- **Review decision C:** the shop owner's Django account can add, edit and deactivate products and categories, but can't cancel or refund. This is enforced by server-side permission checks. Cancellation and refunds stay in the Telegram admin panel.
+- **Telegram admins:** stored as `Utilizador.e_admin`, which only the reseller's superuser can change. `ADMIN_TELEGRAM_IDS` only bootstraps the first admin, and after handover holds the reseller's id or nothing.
+- **Retention:**
+  - confirmation screens without an order are deleted after 45 minutes;
+  - carts after 30 days without a change;
+  - screens linked to an order are kept.
+- **Release safety:** migrations only move forward, with a database backup before each one.
+- **Legal:** invoicing, tax, shipping, withdrawal handling and legal texts stay outside the bot and are each shop's responsibility, stated in the reseller contract. Not legal advice; unverified.
+- **Stage 0 outcome:** not done yet. Code ownership and course rights, the licence and the demo-image rights must be checked before the package is sold. Record here what was checked, with whom, and the result.
+- **End-to-end run (G13):** not done yet. Record the Stripe test-mode results here when it is.
+
+## Business rules still open
+
+- Which customer data is retained beyond the drafts above, for how long, and what customers are told about it (a privacy notice is each shop's responsibility).
 
 Do not silently choose these policies in code.
 

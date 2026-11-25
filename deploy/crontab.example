@@ -1,0 +1,11 @@
+# Telegram shop bot: the one scheduled job (see DEPLOYMENT.md, "Scheduled cleanup").
+#
+# Every 5 minutes it reconciles pending orders older than 1 hour (cancels them and returns
+# stock, or confirms them if Stripe says they were paid), then deletes unused confirmation
+# screens after 45 minutes and idle carts after 30 days. Each run appends one summary line.
+#
+# Change /srv/loja to the shop's project folder. settings.py reads .env from that folder.
+# Install with `crontab -e` as the account that runs the bot. Rotate logs/limpeza.log
+# (for example with logrotate), or it keeps growing.
+
+*/5 * * * * cd /srv/loja && .venv/bin/python manage.py cancelar_encomendas_abandonadas --horas 1 >> logs/limpeza.log 2>&1

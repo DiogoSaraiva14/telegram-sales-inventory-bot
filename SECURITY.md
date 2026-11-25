@@ -2,16 +2,16 @@
 
 Status: started as a static review of the imported source snapshot. Since then, automated tests have been added for the fixed findings (SEC-02, SEC-03, SEC-13). They run on PostgreSQL with Telegram and Stripe mocked; see README.md. No runtime exploit checks, dependency audit, or deployment review have been run. Priorities below are engineering urgency, not CVSS scores or claims of demonstrated exploitation.
 
-**Finding status (2026-11-24):**
-- **Fixed:** SEC-01 to SEC-13. Each section below lists what it does not cover.
+**Finding status (2026-11-25):**
+- **Fixed:** SEC-01 to SEC-13. Each section below lists what it does not cover. The cart design (Stages 1–4) changed several of them; see "Cart and resellable shop" at the end.
 - **Open:** none of SEC-01 to SEC-13.
 - **Caveat:** nothing has been run against live Telegram or Stripe; every check uses mocks and a local PostgreSQL.
 
 ## Trust boundaries
 
 - Telegram users submit commands, callback values, names, and interaction timing.
-- Telegram administrators are selected from ADMIN_TELEGRAM_IDS.
-- Django admin is protected by Django authentication and staff permissions.
+- Telegram administrators are the bootstrap ids in ADMIN_TELEGRAM_IDS plus customers whose `Utilizador.e_admin` flag a Django superuser has set.
+- Django admin is protected by Django authentication and staff permissions. A shop owner's account is in the limited "Dono da loja" group.
 - Stripe sends external events to a CSRF-exempt webhook; the handler verifies Stripe's signature before dispatch.
 - PostgreSQL stores Telegram identifiers, names, orders, payments, stock, and audit records.
 - Secrets are expected through environment variables; .env is ignored by the source .gitignore.
@@ -20,7 +20,7 @@ Status: started as a static review of the imported source snapshot. Since then, 
 
 - core.views.stripe_webhook verifies the raw request body against STRIPE_WEBHOOK_SECRET before processing an event.
 - ORM calls use Django querysets rather than constructing raw SQL.
-- Telegram admin callback branches generally check is_admin.
+- Admin callback routes are checked once, in the router, with `services.e_admin`, before any admin handler runs.
 - Dynamic Django admin badge values use format_html; the literal mark_safe badge values are constants.
 - No hard-coded Telegram or Stripe credential values were found in the inspected source.
 - The GitHub repository is private; bundled product images and Python bytecode were not imported.
@@ -33,7 +33,9 @@ Status: started as a static review of the imported source snapshot. Since then, 
 - `SECRET_KEY` and `DB_NAME` are required: settings refuse to load without them.
 - `DEBUG` now defaults to False and is on only when set to `True`.
 - `ALLOWED_HOSTS` comes from a comma-separated `ALLOWED_HOSTS` variable and defaults to empty. With `DEBUG` off and no hosts, Django serves nothing: `runserver` refuses to start, and a WSGI server answers every request with 400. That is a safe failure, not an open one.
-- Still open, with the Phase 4 deployment work: HTTPS, secure cookies, HSTS and `CSRF_TRUSTED_ORIGINS`.
+- **HTTPS (cart design, Stage 4):** with `DJANGO_HTTPS=True`, settings turn on `SECURE_SSL_REDIRECT`, secure session and CSRF cookies, and HSTS for one year. `SECURE_PROXY_SSL_HEADER` is set only with `DJANGO_BEHIND_PROXY=True`. `CSRF_TRUSTED_ORIGINS` comes from a comma-separated variable.
+  - It is off by default so local http development keeps working. DEPLOYMENT.md requires it for every public copy.
+  - Not run: `manage.py check --deploy` against a real deployment.
 
 Originally: config/settings.py lines 14–20 permitted SECRET_KEY to be absent, defaults DEBUG to True, and accepts every host with ALLOWED_HOSTS = ['*']. A deployment that does not override these values starts with unsafe settings or fails later in confusing ways. Require explicit environment-specific values and fail startup when production settings are incomplete.
 
@@ -198,12 +200,41 @@ Originally: telegram_bot/keyboards.py `teclado_minhas_encomendas` emits user_enc
 
 ## Additional review notes
 
-- The imported snapshot had no automated tests or CI. Tests now exist (telegram_bot/tests.py, core/tests.py); CI is still absent.
+- The imported snapshot had no automated tests or CI. Tests now exist (telegram_bot/tests.py, core/tests.py), and GitHub Actions runs them on PostgreSQL.
 - Stripe expiry, refund, asynchronous-payment, and retry semantics are not documented.
 - The source stores Telegram identifiers and names. The phone field exists in the model; no population path was observed in the reviewed bot code.
 - The project has no documented data retention, privacy notice, upload limits, or deployment threat model.
 - .gitignore excludes .env and media, but the source snapshot included committed product images. These were omitted from GitHub; verify ownership and licensing before adding replacements.
-- The admin_only decorator in security/decorators.py is defined but not used by the bot; the Telegram admin check runs once per callback in telegram_bot/handlers/callbacks.py and in the /admin command.
+- The unused admin_only decorator was removed (Stage 4). The Telegram admin check runs once per callback in telegram_bot/handlers/callbacks.py and in the /admin command, both through `services.e_admin`.
+
+## Cart and resellable shop (Stages 1–4, 2026-11-25)
+
+The cart design ([docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_shop.md)) keeps the guarantees above and changes these points.
+
+**Checkout (changes SEC-02, SEC-03, SEC-04, SEC-13):**
+- **Saved screens:** "Finalizar compra" saves a `ConfirmacaoCarrinho`: names, quantities and integer-cent prices, never changed after insert. The Confirm button is `confirmar_encomenda_<nonce>` (36 bytes). The 30-minute age is checked on the server against the snapshot's `criada_em`, not from the button.
+- **Old buttons:** buttons from before Stage 2 (`<nonce>_<ts>_<id>`) only reopen an existing order. Anything else gets the expired screen.
+- **Order creation:** one transaction locks the snapshot, then the cart, then the products in id order, and never the customer row. If the cart, a price, active status, stock or a product changed, nothing is written and the customer sees the changes. One screen still creates at most one order, and an existing order always wins.
+- **One pending order per customer:** a read inside the transaction refuses checkout while any pending order exists, legacy ones included. A partial unique constraint (`uma_encomenda_pendente_por_cliente`) covers two new orders racing each other.
+- **Payment window:** links expire 60 minutes after the order and are created only while it is at most 28 minutes old. An expired session cancels the order and is not replaced, which reverses D19 in SEC-03 and SEC-04.
+- **Reconciling cleanup:** every 5 minutes it settles each pending order older than 60 minutes. It cancels unpaid orders and expires their sessions, and confirms paid ones the way the webhook does. A pending order whose payment is already marked paid is logged and never refunded. A Stripe or database error leaves the order for the next run.
+- **Not covered:** the 65-minute limit on held stock assumes the cleanup, Stripe and the database are working. Repeated cleanup failures are visible only in its log, with no alert (DEPLOYMENT.md).
+
+**Cart abuse limits:**
+- at most 20 lines per cart and 99 per line, and never above the current stock when changed;
+- the cart reserves nothing;
+- one pending order per customer, so one customer holds at most one order's stock for at most about 65 minutes.
+
+Repeating orders to keep scarce stock held is an accepted risk.
+
+**Admin rights:**
+- **Telegram:** admin rights are `Utilizador.e_admin`, read on every check, so changes apply without a restart. Only a superuser can change the flag in Django admin. `ADMIN_TELEGRAM_IDS` only bootstraps the first admin and, after handover, holds the reseller's id or nothing.
+- **Django:** the "Dono da loja" group (migration 0015) has add/change/view on products and categories, change/view on the shop settings, and view-only on orders, order lines and payments. It has no delete anywhere and nothing on customers, stock movements, audit rows, carts, screens or Django's users and groups.
+- **Order actions:** the ship and deliver actions require the change permission on orders, and cancel requires the custom `core.cancelar_encomenda`. Django checks these when an action is listed and when it is posted. The tests post each action as an owner and find the order unchanged.
+
+**Markdown:** the shop name, welcome text and category names are owner-entered and go through `md()` in Markdown messages. The cart and confirmation screens are plain text.
+
+**Retention:** confirmation screens that never became an order are deleted after 45 minutes, and carts after 30 days without a change. Screens linked to an order are kept as the record of what the customer confirmed.
 
 ## Review limitations
 
