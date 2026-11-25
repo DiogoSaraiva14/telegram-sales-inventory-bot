@@ -106,12 +106,13 @@ class ProdutoAdmin(admin.ModelAdmin):
         outros = [f for f in form.changed_data if f != 'stock_atual']
         if outros:  # never write stock_atual with the form's possibly stale value
             obj.save(update_fields=outros)
-        obj.stock_atual = services.ajustar_stock(
-            obj.pk, delta, f"Ajuste manual via Django admin (delta={delta})")
-        RegistoAuditoria.objects.create(
-            acao='AJUSTE_STOCK', entidade='Produto',
-            descricao=f'{obj.nome}: delta={delta}, novo stock={obj.stock_atual} (Django admin: {request.user})',
-        )
+        with transaction.atomic():  # the audit row commits with the adjustment, or neither does
+            obj.stock_atual = services.ajustar_stock(
+                obj.pk, delta, f"Ajuste manual via Django admin (delta={delta})")
+            RegistoAuditoria.objects.create(
+                acao='AJUSTE_STOCK', entidade='Produto',
+                descricao=f'{obj.nome}: delta={delta}, novo stock={obj.stock_atual} (Django admin: {request.user})',
+            )
 
     @staticmethod
     def _definir_ativo(queryset, ativo):

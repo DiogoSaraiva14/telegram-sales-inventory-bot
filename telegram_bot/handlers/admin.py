@@ -82,13 +82,10 @@ async def produto_detalhe(query, context, data, user_id):
 
 async def produto_toggle(query, context, data, user_id):
     try:
-        p = await services.get_produto_admin(sanitizar_id(data.split("_")[-1], campo="produto_id"))
+        p = await services.alternar_produto_ativo_async(sanitizar_id(data.split("_")[-1], campo="produto_id"), user_id)
     except (EntradaInvalida, Produto.DoesNotExist, ValueError):
         await responder(query, context, "❌ Produto não encontrado.", kb.teclado_voltar_admin())
         return
-    await services.alternar_produto_ativo(p)
-    acao = "ATIVAR_PRODUTO" if p.ativo else "DESATIVAR_PRODUTO"
-    await services.registar_auditoria(user_id, acao, "Produto", f"{p.nome} (id={p.id})")
     await query.answer(f"Produto {'✅ ativado' if p.ativo else '❌ desativado'}.", show_alert=False)
     await responder(query, context, _texto_produto(p), kb.teclado_produto_acao(p))
 
@@ -113,15 +110,10 @@ async def stock_ajuste(query, context, data, user_id):
     try:
         produto_id = sanitizar_id(parts[-2], campo="produto_id")
         delta = sanitizar_delta_stock(parts[-1])
-        p = await services.get_produto_admin(produto_id)
+        p = await services.ajustar_stock_admin_async(produto_id, delta, user_id)
     except (EntradaInvalida, ValueError, Produto.DoesNotExist):
         await responder(query, context, "❌ Erro ao ajustar stock.", kb.teclado_voltar_admin())
         return
-    await services.ajustar_stock_manual(p, delta)
-    await services.registar_auditoria(
-        user_id, "AJUSTE_STOCK", "Produto",
-        f"{p.nome}: delta={delta}, novo stock={p.stock_atual}"
-    )
     await query.answer(f"Stock atualizado: {p.stock_atual} unidades.", show_alert=False)
     await responder(query, context, _texto_stock(p), kb.teclado_stock_ajuste(p.id))
 
@@ -236,12 +228,10 @@ async def utilizadores(query, context, data, user_id):
 async def utilizador_toggle(query, context, data, user_id):
     tid = data[len("admin_utilizador_"):]
     try:
-        u, novo_ativo = await services.toggle_utilizador_ativo(tid)
+        u, novo_ativo = await services.alternar_utilizador_ativo_async(tid, user_id)
     except Utilizador.DoesNotExist:
         await responder(query, context, "❌ Utilizador não encontrado.", kb.teclado_voltar_admin())
         return
-    acao = "DESBLOQUEAR_UTILIZADOR" if novo_ativo else "BLOQUEAR_UTILIZADOR"
-    await services.registar_auditoria(user_id, acao, "Utilizador", f"{u.nome} (telegram_id={tid})")
     estado_label = "✅ desbloqueado" if novo_ativo else "🚫 bloqueado"
     await responder(
         query, context,

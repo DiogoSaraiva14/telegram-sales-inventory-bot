@@ -91,11 +91,24 @@ def _pagina(queryset, pagina: int):
 async def get_todos_utilizadores(pagina: int = 0):
     return await sync_to_async(_pagina)(Utilizador.objects.order_by('nome', 'id'), pagina)
 
-async def toggle_utilizador_ativo(telegram_id: str) -> tuple:
-    utilizador = await sync_to_async(Utilizador.objects.get)(telegram_id=telegram_id)
-    utilizador.ativo = not utilizador.ativo
-    await sync_to_async(utilizador.save)()
+def _auditar(admin_telegram_id, acao, entidade, descricao):
+    """Audit row for an admin action; call it inside the action's transaction so both commit or neither."""
+    autor = Utilizador.objects.filter(telegram_id=str(admin_telegram_id)).first()
+    RegistoAuditoria.objects.create(utilizador=autor, acao=acao, entidade=entidade, descricao=descricao)
+
+def alternar_utilizador_ativo(telegram_id: str, admin_telegram_id) -> tuple:
+    """Block or unblock a customer from the locked row, with its audit row: (utilizador, now_active)."""
+    with transaction.atomic():
+        utilizador = Utilizador.objects.select_for_update().get(telegram_id=telegram_id)
+        utilizador.ativo = not utilizador.ativo
+        # update(), not save(): a full save could undo a concurrent e_admin change in Django admin.
+        Utilizador.objects.filter(pk=utilizador.pk).update(ativo=utilizador.ativo)
+        _auditar(admin_telegram_id, "DESBLOQUEAR_UTILIZADOR" if utilizador.ativo else "BLOQUEAR_UTILIZADOR",
+                 "Utilizador", f"{utilizador.nome} (telegram_id={telegram_id})")
     return utilizador, utilizador.ativo
+
+async def alternar_utilizador_ativo_async(telegram_id: str, admin_telegram_id) -> tuple:
+    return await sync_to_async(alternar_utilizador_ativo)(telegram_id, admin_telegram_id)
 
 
 # ── Produtos e stock ───────────────────────────────────────────────────────
@@ -124,10 +137,19 @@ async def get_todos_produtos(pagina: int = 0):
         pagina,
     )
 
-async def alternar_produto_ativo(produto):
-    produto.ativo = not produto.ativo
-    # update(), not save(): a full save would write back a stale stock_atual (SEC-10).
-    await sync_to_async(Produto.objects.filter(pk=produto.pk).update)(ativo=produto.ativo)
+def alternar_produto_ativo(produto_id: int, admin_telegram_id):
+    """Activate or deactivate from the locked row, with its audit row; returns the product."""
+    with transaction.atomic():
+        produto = Produto.objects.select_for_update(of=('self',)).select_related('categoria').get(pk=produto_id)
+        produto.ativo = not produto.ativo
+        # update(), not save(): a full save would write back a stale stock_atual (SEC-10).
+        Produto.objects.filter(pk=produto_id).update(ativo=produto.ativo)
+        _auditar(admin_telegram_id, "ATIVAR_PRODUTO" if produto.ativo else "DESATIVAR_PRODUTO",
+                 "Produto", f"{produto.nome} (id={produto.id})")
+    return produto
+
+async def alternar_produto_ativo_async(produto_id: int, admin_telegram_id):
+    return await sync_to_async(alternar_produto_ativo)(produto_id, admin_telegram_id)
 
 def ajustar_stock(produto_id: int, delta: int, observacoes: str) -> int:
     """Add delta to a product's stock under its row lock, never below zero (SEC-10).
@@ -146,9 +168,16 @@ def ajustar_stock(produto_id: int, delta: int, observacoes: str) -> int:
             )
     return novo
 
-async def ajustar_stock_manual(produto, delta: int):
-    produto.stock_atual = await sync_to_async(ajustar_stock)(
-        produto.id, delta, f"Ajuste manual via bot admin (delta={delta})")
+def ajustar_stock_admin(produto_id: int, delta: int, admin_telegram_id):
+    """A Telegram admin stock button: the adjustment, its movement and its audit row in one transaction."""
+    with transaction.atomic():
+        novo = ajustar_stock(produto_id, delta, f"Ajuste manual via bot admin (delta={delta})")
+        produto = Produto.objects.get(pk=produto_id)
+        _auditar(admin_telegram_id, "AJUSTE_STOCK", "Produto", f"{produto.nome}: delta={delta}, novo stock={novo}")
+    return produto
+
+async def ajustar_stock_admin_async(produto_id: int, delta: int, admin_telegram_id):
+    return await sync_to_async(ajustar_stock_admin)(produto_id, delta, admin_telegram_id)
 
 
 # ── Encomendas ─────────────────────────────────────────────────────────────
