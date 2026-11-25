@@ -1,13 +1,12 @@
 import stripe
 import logging
-import httpx
 from django.conf import settings
 from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from .models import Pagamento
 from . import services
-from telegram_bot.constants import MENSAGENS_NOTIFICACAO
+from .notificacoes import notificar, notificar_estado
 
 logger = logging.getLogger(__name__)
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -72,41 +71,12 @@ def _handle_payment_success(session):
 
 
 def _notificar_pagamento_telegram(encomenda):
-    _enviar_telegram(encomenda, (
+    notificar(encomenda, (
         f"✅ *Pagamento confirmado!*\n\n"
         f"📦 Encomenda #{encomenda.id}\n"
         f"💶 Total: {encomenda.total:.2f}€\n\n"
         f"O teu pagamento foi recebido. Estamos a preparar o teu pedido! 🙏"
     ))
-
-
-def notificar_estado(encomenda, chave):
-    """Customer message for an order state; chave is a MENSAGENS_NOTIFICACAO key."""
-    _enviar_telegram(encomenda, MENSAGENS_NOTIFICACAO[chave].format(id=encomenda.id, total=float(encomenda.total)))
-
-
-def _enviar_telegram(encomenda, mensagem):
-    token = settings.TELEGRAM_TOKEN
-    if not token:
-        logger.warning("TELEGRAM_TOKEN não configurado — notificação ignorada")
-        return
-
-    chat_id = encomenda.utilizador.telegram_id
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    try:
-        response = httpx.post(url, json={
-            "chat_id": chat_id,
-            "text": mensagem,
-            "parse_mode": "Markdown",
-        }, timeout=10)
-        if response.status_code == 200:
-            logger.info("Notificação Telegram enviada: encomenda=#%s", encomenda.id)
-        else:
-            logger.error("Falha na notificação Telegram: status=%s body=%s",
-                         response.status_code, response.text)
-    except Exception as exc:
-        # Type only: an httpx error message can carry the request URL, which holds the bot token.
-        logger.error("Erro ao enviar notificação Telegram: encomenda=#%s erro=%s", encomenda.id, type(exc).__name__)
 
 
 def _handle_payment_expired(session):

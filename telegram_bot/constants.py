@@ -50,6 +50,7 @@ ROTULO_AUDITORIA = {
     'ATIVAR_PRODUTO': "✅ Produto ativado",
     'DESATIVAR_PRODUTO': "🚫 Produto desativado",
     'BLOQUEAR_UTILIZADOR': "🚫 Utilizador bloqueado",
+    'NOTIFICACAO_FALHADA': "📵 Notificação falhada",
     'DESBLOQUEAR_UTILIZADOR': "✅ Utilizador desbloqueado",
 }
 

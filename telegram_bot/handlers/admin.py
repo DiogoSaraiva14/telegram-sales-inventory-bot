@@ -6,14 +6,15 @@ check runs in telegram_bot.handlers.callbacks before any handler here.
 import logging
 
 import stripe
+from asgiref.sync import sync_to_async
 
 from core.models import Utilizador, Produto, Encomenda
 from core import services
+from core.notificacoes import notificar_estado
 from security.sanitization import sanitizar_id, sanitizar_delta_stock, EntradaInvalida
 from django.utils import timezone
 
 from telegram_bot.constants import ESTADO_EMOJI, ROTULO_AUDITORIA
-from telegram_bot.notifications import notificar_cliente
 from telegram_bot.ui import md, responder
 from telegram_bot import keyboards as kb
 
@@ -186,7 +187,7 @@ async def _mudar_estado_e_notificar(
         )
         return
 
-    notificada = await notificar_cliente(context, encomenda, mensagem_cliente)
+    notificada = await sync_to_async(notificar_estado)(encomenda, mensagem_cliente)
     await services.registar_auditoria(
         user_id,
         f"ADMIN_{label_acao}_ENCOMENDA",
@@ -194,13 +195,14 @@ async def _mudar_estado_e_notificar(
         f"#{encomenda.id} -> {novo_estado} | notificado={notificada}"
     )
     emoji = ESTADO_EMOJI.get(novo_estado, '📦')
-    extra = "\n\n⚠️ _Notificação ao cliente falhou (bot bloqueado ou conta inexistente)._" if not notificada else ""
+    extra = ("\n\n⚠️ _A notificação ainda não chegou ao cliente. É reenviada automaticamente durante 24 h; "
+             "se falhar de vez, fica no registo de auditoria._") if not notificada else ""
     await responder(
         query, context,
         f"{emoji} *Encomenda #{encomenda.id}* marcada como *{novo_estado}*."
         f"\n👤 Cliente: {md(encomenda.utilizador.nome)}"
         f"\n💶 Total: {encomenda.total:.2f}€"
-        f"\n📩 Notificação enviada: {'✅ sim' if notificada else '❌ não'}"
+        f"\n📩 Notificação enviada: {'✅ sim' if notificada else '⏳ em fila'}"
         + extra,
         kb.teclado_voltar_admin()
     )

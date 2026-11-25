@@ -339,3 +339,25 @@ class RegistoAuditoria(models.Model):
         verbose_name    = "Registo de Auditoria"
         verbose_name_plural = "Registos de Auditoria"
         ordering        = ['-data_hora']
+
+# ── Notificações ao cliente (fila com reenvio) ─────────────────────────────
+
+class Notificacao(models.Model):
+    """A customer order message: saved before sending, resent by the cleanup run for 24 hours."""
+    ESTADOS = [('pendente', 'Pendente'), ('enviada', 'Enviada'), ('falhada', 'Falhada')]
+
+    encomenda  = models.ForeignKey(Encomenda, on_delete=models.CASCADE, related_name='notificacoes')
+    chat_id    = models.CharField(max_length=50)
+    texto      = models.TextField()
+    estado     = models.CharField(max_length=10, choices=ESTADOS, default='pendente', db_index=True)
+    tentativas = models.PositiveIntegerField(default=0)
+    criada     = models.DateTimeField(auto_now_add=True)
+    enviada_em = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Notificação #{self.pk} — encomenda #{self.encomenda_id} ({self.estado})"
+
+    class Meta:
+        db_table = 'notificacao'
+        verbose_name = "Notificação"
+        verbose_name_plural = "Notificações"

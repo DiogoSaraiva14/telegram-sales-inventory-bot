@@ -65,6 +65,7 @@ The design is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellabl
 - **Review decision B:** keep "Repetir encomenda" for cancelled unpaid orders. A customer "cancel my pending order" button is deferred.
 - **Review decision C:** the shop owner's Django account can add, edit and deactivate products and categories, but can't cancel or refund. This is enforced by server-side permission checks. Cancellation and refunds stay in the Telegram admin panel.
 - **Telegram admins:** stored as `Utilizador.e_admin`, which only the reseller's superuser can change. `ADMIN_TELEGRAM_IDS` only bootstraps the first admin, and after handover holds the reseller's id or nothing.
+- **Customer messages (owner decisions, 2026-11-25):** every order message is queued and resent by the 5-minute cleanup for 24 hours. A message Telegram refuses, or still undelivered after 24 hours, is given up and recorded as "Notificação falhada" in the audit log.
 - **Retention:**
   - confirmation screens without an order are deleted after 45 minutes;
   - carts after 30 days without a change;
