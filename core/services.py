@@ -23,7 +23,7 @@ from django.db.models import F
 from django.utils import timezone
 
 from core.models import (
-    Utilizador, Categoria, ConfirmacaoCarrinho, Produto, Encomenda, LinhaEncomenda,
+    Utilizador, Categoria, Carrinho, ConfirmacaoCarrinho, LinhaCarrinho, Produto, Encomenda, LinhaEncomenda,
     MovimentoStock, RegistoAuditoria, Pagamento,
 )
 from security.sanitization import validar_telegram_id, sanitizar_nome_utilizador
@@ -296,8 +296,13 @@ def criar_encomenda_de_confirmacao(telegram_user, nonce: str):
         pendente = _pendente_de(snap.utilizador_id)
         if pendente is not None:
             return ("pendente", pendente)
+        carrinho = None
+        if snap.revisao_carrinho is not None:  # a cart screen: lock the cart before the products
+            carrinho = Carrinho.objects.select_for_update().filter(utilizador_id=snap.utilizador_id).first()
         produtos = _bloquear_produtos([l["produto_id"] for l in snap.linhas])
         alteracoes = _alteracoes(snap.linhas, produtos)
+        if snap.revisao_carrinho is not None and (carrinho is None or carrinho.revisao != snap.revisao_carrinho):
+            alteracoes.insert(0, Alteracao(0, "", "carrinho"))  # the cart changed after the screen was drawn
         if alteracoes:
             return ("alterado", alteracoes)  # nothing has been written
         try:
@@ -331,6 +336,9 @@ def criar_encomenda_de_confirmacao(telegram_user, nonce: str):
             utilizador_id=snap.utilizador_id, acao="CRIAR_ENCOMENDA", entidade="Encomenda",
             descricao=f"#{encomenda.id} — " + "; ".join(descricao) + f" — total {encomenda.total:.2f}€",
         )
+        if carrinho is not None:  # the cart became this order
+            carrinho.linhas.all().delete()
+            _marcar_alteracao(carrinho)
     return ("criada", encomenda)
 
 def _encomenda_por_chave(chave):
@@ -345,6 +353,208 @@ async def criar_confirmacao_async(telegram_user, linhas, revisao_carrinho=None):
 
 async def criar_encomenda_de_confirmacao_async(telegram_user, nonce: str):
     return await sync_to_async(criar_encomenda_de_confirmacao)(telegram_user, nonce)
+
+
+# ── Carrinho (cart design, Stage 3) ────────────────────────────────────────
+# Every change locks the cart row, increases revisao and sets atualizado_em; viewing does neither.
+
+RETENCAO_CONFIRMACOES = timedelta(minutes=45)  # unused screens; screens with an order are kept
+RETENCAO_CARRINHOS = timedelta(days=30)
+
+
+class LinhaVista(NamedTuple):
+    """A cart line with live product data, for drawing the cart."""
+    produto_id: int
+    nome: str
+    quantidade: int
+    preco: Decimal  # live price
+    preco_ao_adicionar: Decimal
+    stock: int
+    ativo: bool
+
+    @property
+    def subtotal(self):
+        return self.preco * self.quantidade
+
+    @property
+    def preco_alterado(self):  # only marks the line
+        return self.preco != self.preco_ao_adicionar
+
+    @property
+    def indisponivel(self):
+        return not self.ativo
+
+    @property
+    def stock_insuficiente(self):
+        return self.ativo and self.stock < self.quantidade
+
+    @property
+    def bloqueia(self):  # hides "Finalizar compra"
+        return self.indisponivel or self.stock_insuficiente
+
+
+def _marcar_alteracao(carrinho):
+    carrinho.revisao += 1
+    carrinho.atualizado_em = timezone.now()
+    carrinho.save(update_fields=['revisao', 'atualizado_em'])
+
+def _carrinho_bloqueado(telegram_user):
+    """The customer's cart, created if needed, locked until the transaction ends."""
+    utilizador, _ = _obter_ou_criar_utilizador(telegram_user)
+    Carrinho.objects.get_or_create(utilizador=utilizador)
+    return Carrinho.objects.select_for_update().get(utilizador=utilizador)
+
+def _mudar_quantidade(telegram_user, produto_id, delta, pode_criar):
+    with transaction.atomic():
+        carrinho = _carrinho_bloqueado(telegram_user)
+        linha = carrinho.linhas.filter(produto_id=produto_id).first()
+        if linha is None and not pode_criar:
+            return ("inexistente", 0)
+        atual = linha.quantidade if linha else 0
+        novo = atual + delta
+        if novo <= 0:
+            linha.delete()
+            _marcar_alteracao(carrinho)
+            return ("removido", 0)
+        produto = Produto.objects.filter(pk=produto_id).first()
+        if delta > 0:
+            if produto is None or not produto.ativo or produto.stock_atual <= 0:
+                return ("indisponivel", atual)
+            if linha is None and carrinho.linhas.count() >= MAX_LINHAS:
+                return ("limite_linhas", 0)
+            if novo > MAX_QUANTIDADE:
+                return ("limite_quantidade", atual)
+            if novo > produto.stock_atual:
+                return ("limite_stock", atual)
+        if linha is None:
+            LinhaCarrinho.objects.create(carrinho=carrinho, produto=produto, quantidade=novo,
+                                         preco_ao_adicionar=produto.preco)
+        else:
+            linha.quantidade, linha.preco_ao_adicionar = novo, produto.preco
+            linha.save(update_fields=['quantidade', 'preco_ao_adicionar'])
+        _marcar_alteracao(carrinho)
+        return ("adicionado", novo)
+
+def adicionar_ao_carrinho(telegram_user, produto_id: int):
+    """Add one unit. Returns (resultado, quantidade): "adicionado", "limite_stock",
+    "limite_quantidade", "limite_linhas" or "indisponivel"."""
+    return _mudar_quantidade(telegram_user, produto_id, 1, pode_criar=True)
+
+def alterar_quantidade(telegram_user, produto_id: int, delta: int):
+    """Like adicionar_ao_carrinho for an existing line; reaching 0 gives ("removido", 0)."""
+    return _mudar_quantidade(telegram_user, produto_id, delta, pode_criar=False)
+
+def remover_do_carrinho(telegram_user, produto_id: int) -> str:
+    with transaction.atomic():
+        carrinho = _carrinho_bloqueado(telegram_user)
+        apagadas, _ = carrinho.linhas.filter(produto_id=produto_id).delete()
+        if not apagadas:
+            return "inexistente"
+        _marcar_alteracao(carrinho)
+        return "removido"
+
+def ver_carrinho(telegram_user):
+    """([LinhaVista], total at live prices). No lock and no write."""
+    linhas = [
+        LinhaVista(l.produto_id, l.produto.nome, l.quantidade, l.produto.preco, l.preco_ao_adicionar,
+                   l.produto.stock_atual, l.produto.ativo)
+        for l in LinhaCarrinho.objects.select_related('produto')
+        .filter(carrinho__utilizador__telegram_id=validar_telegram_id(telegram_user.id)).order_by('pk')
+    ]
+    return linhas, sum((l.subtotal for l in linhas), Decimal('0.00'))
+
+def preparar_confirmacao_carrinho(telegram_user):
+    """Save the confirmation screen for the whole cart.
+
+    Returns (resultado, valor, precos_alterados): ("ok", snapshot, {produto_id whose price
+    changed since it was added}), ("vazio", None, set()) or ("bloqueado", [Alteracao], set()).
+    """
+    with transaction.atomic():
+        carrinho = _carrinho_bloqueado(telegram_user)
+        linhas = list(carrinho.linhas.order_by('pk'))
+        if not linhas:
+            return ("vazio", None, set())
+        resultado, valor = criar_confirmacao(
+            telegram_user, [(l.produto_id, l.quantidade) for l in linhas], carrinho.revisao)
+        if resultado != "ok":
+            return (resultado, valor, set())
+        precos = {l["produto_id"]: l["preco_unitario_centimos"] for l in valor.linhas}
+        alterados = {l.produto_id for l in linhas if _centimos(l.preco_ao_adicionar) != precos[l.produto_id]}
+        return ("ok", valor, alterados)
+
+def _pode_repetir(encomenda, telegram_id: str) -> bool:
+    return (encomenda.estado == 'cancelada' and encomenda.utilizador.telegram_id == telegram_id
+            and not Pagamento.objects.filter(encomenda=encomenda,
+                                             estado_pagamento__in=('pago', 'reembolsado')).exists())
+
+def repetir_encomenda(telegram_user, encomenda_id: int):
+    """Merge a cancelled unpaid order's lines into the cart; nothing is ordered.
+
+    Returns (adicionados, reduzidos, ignorados) as product names, or None if the order
+    can't be repeated by this customer. Lines are capped by stock and MAX_QUANTIDADE;
+    inactive or sold-out products, and new lines beyond MAX_LINHAS, are skipped.
+    """
+    with transaction.atomic():
+        encomenda = Encomenda.objects.select_related('utilizador').filter(pk=encomenda_id).first()
+        if encomenda is None or not _pode_repetir(encomenda, validar_telegram_id(telegram_user.id)):
+            return None
+        carrinho = _carrinho_bloqueado(telegram_user)
+        existentes = {l.produto_id: l for l in carrinho.linhas.all()}
+        adicionados, reduzidos, ignorados = [], [], []
+        mudou = False
+        for linha in encomenda.linhas.select_related('produto').order_by('pk'):
+            produto, nome = linha.produto, linha.nome_produto or linha.produto.nome
+            atual = existentes.get(produto.pk)
+            if not produto.ativo or produto.stock_atual <= 0 or (atual is None and len(existentes) >= MAX_LINHAS):
+                ignorados.append(nome)
+                continue
+            antes = atual.quantidade if atual else 0
+            desejado = antes + linha.quantidade
+            novo = min(desejado, MAX_QUANTIDADE, produto.stock_atual)
+            if atual is None:
+                existentes[produto.pk] = LinhaCarrinho.objects.create(
+                    carrinho=carrinho, produto=produto, quantidade=novo, preco_ao_adicionar=produto.preco)
+                mudou = True
+            elif novo > antes:
+                atual.quantidade, atual.preco_ao_adicionar = novo, produto.preco
+                atual.save(update_fields=['quantidade', 'preco_ao_adicionar'])
+                mudou = True
+            (adicionados if novo >= desejado else reduzidos).append(nome)
+        if mudou:
+            _marcar_alteracao(carrinho)
+        return adicionados, reduzidos, ignorados
+
+def limpar_rascunhos():
+    """Delete unused confirmation screens after 45 minutes and idle carts after 30 days.
+
+    Returns (screens, carts) deleted. A screen linked to an order is never deleted.
+    """
+    agora = timezone.now()
+    _, ecras = ConfirmacaoCarrinho.objects.filter(
+        encomenda__isnull=True, criada_em__lt=agora - RETENCAO_CONFIRMACOES).delete()
+    _, carrinhos = Carrinho.objects.filter(atualizado_em__lt=agora - RETENCAO_CARRINHOS).delete()
+    return ecras.get('core.ConfirmacaoCarrinho', 0), carrinhos.get('core.Carrinho', 0)
+
+async def adicionar_ao_carrinho_async(telegram_user, produto_id):
+    return await sync_to_async(adicionar_ao_carrinho)(telegram_user, produto_id)
+
+async def alterar_quantidade_async(telegram_user, produto_id, delta):
+    return await sync_to_async(alterar_quantidade)(telegram_user, produto_id, delta)
+
+async def remover_do_carrinho_async(telegram_user, produto_id):
+    return await sync_to_async(remover_do_carrinho)(telegram_user, produto_id)
+
+async def ver_carrinho_async(telegram_user):
+    return await sync_to_async(ver_carrinho)(telegram_user)
+
+async def preparar_confirmacao_carrinho_async(telegram_user):
+    return await sync_to_async(preparar_confirmacao_carrinho)(telegram_user)
+
+async def pode_repetir(encomenda, user_id) -> bool:
+    return await sync_to_async(_pode_repetir)(encomenda, validar_telegram_id(user_id))
+
+async def repetir_encomenda_async(telegram_user, encomenda_id):
+    return await sync_to_async(repetir_encomenda)(telegram_user, encomenda_id)
 
 
 # ── Checkout: sessão Stripe recuperável (P15; D19 reversed in Stage 2) ─────

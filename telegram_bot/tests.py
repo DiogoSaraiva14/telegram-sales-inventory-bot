@@ -208,7 +208,7 @@ class CheckoutHandlerTests(SimpleTestCase):
             await self._run(data)
             texto, botoes, parse_mode = self._ecra()
             self.assertEqual((texto, parse_mode), (MENSAGEM_ECRA_EXPIRADO, None))
-            self.assertEqual(botoes, [("🛍️ Ver Catálogo", "menu_catalogo"), ("🔙 Menu Principal", "menu_inicio")])
+            self.assertEqual(botoes, [("🛒 Ver carrinho", "carrinho_ver"), ("🔙 Menu Principal", "menu_inicio")])
             self.criar.assert_not_awaited()
             self.lookup.assert_not_awaited()
 
@@ -259,11 +259,14 @@ class CheckoutHandlerTests(SimpleTestCase):
     async def test_changed_screen_lists_the_changes_and_orders_nothing(self):
         alteracoes = [customer.services.Alteracao(7, "SSD", "preco", Decimal("49.99"), Decimal("54.99")),
                       customer.services.Alteracao(8, "RAM", "stock", 2, 0)]
-        await self._run(self.data, criar=("alterado", alteracoes))
+        alteracoes.insert(0, customer.services.Alteracao(0, "", "carrinho"))
+        with patch.object(customer.services, "ver_carrinho_async", AsyncMock(return_value=([], Decimal("0")))):
+            await self._run(self.data, criar=("alterado", alteracoes))
         texto, botoes, parse_mode = self._ecra()
         self.assertIsNone(parse_mode)
-        self.assertIn("• SSD: ⚠️ preço alterado: 49.99€ → 54.99€\n• RAM: ⚠️ sem stock suficiente", texto)
-        self.assertEqual(botoes, [("🔙 Voltar", "produto_7"), ("🔙 Menu Principal", "menu_inicio")])
+        self.assertIn("• ⚠️ o carrinho mudou depois de abrires este ecrã\n"
+                      "• SSD: ⚠️ preço alterado: 49.99€ → 54.99€\n• RAM: ⚠️ sem stock suficiente", texto)
+        self.assertEqual(botoes, [("🛍️ Continuar a comprar", "menu_catalogo"), ("🔙 Menu Principal", "menu_inicio")])
         self.garantir.assert_not_awaited()
         self.query.answer.assert_awaited_once_with()
 
@@ -327,32 +330,6 @@ class CheckoutHandlerTests(SimpleTestCase):
         await self._run(self.data)
         self.assertLess(len(self._ecra()[0]), 4096)
 
-    async def test_each_product_confirm_screen_saves_a_new_snapshot(self):
-        produto = SimpleNamespace(id=7, nome="SSD", preco=Decimal("50.00"), stock_atual=3)
-        snaps = [SimpleNamespace(nonce=n, linhas=[{"nome": "SSD", "preco_unitario_centimos": 5000}])
-                 for n in (NONCE, "0123456789abcdef")]
-        criar = AsyncMock(side_effect=[("ok", snaps[0]), ("ok", snaps[1])])
-        responder = AsyncMock()
-        with patch.object(customer.services, "get_produto", AsyncMock(return_value=produto)), \
-             patch.object(customer.services, "criar_confirmacao_async", criar), \
-             patch.object(customer, "responder", responder):
-            for _ in range(2):
-                await customer.encomendar(callbacks._RespostaUnica(self.query), MagicMock(), "encomendar_7", 99)
-        self.assertEqual([c.args[1] for c in criar.await_args_list], [[(7, 1)], [(7, 1)]])
-        vistos = [_botoes(c.args[3]) for c in responder.await_args_list]
-        self.assertEqual([v[0][1] for v in vistos], [f"confirmar_encomenda_{n.nonce}" for n in snaps])
-        self.assertEqual(vistos[0][1], ("❌ Cancelar", "produto_7"))
-
-    async def test_product_sold_out_before_its_screen_shows_the_change(self):
-        produto = SimpleNamespace(id=7, nome="SSD", preco=Decimal("50.00"), stock_atual=3)
-        bloqueado = ("bloqueado", [customer.services.Alteracao(7, "SSD", "stock", 1, 0)])
-        responder = AsyncMock()
-        with patch.object(customer.services, "get_produto", AsyncMock(return_value=produto)), \
-             patch.object(customer.services, "criar_confirmacao_async", AsyncMock(return_value=bloqueado)), \
-             patch.object(customer, "responder", responder):
-            await customer.encomendar(callbacks._RespostaUnica(self.query), MagicMock(), "encomendar_7", 99)
-        self.assertIn("• SSD: ⚠️ sem stock suficiente", responder.await_args.args[2])
-
 
 class PhotoFallbackTests(SimpleTestCase):
     """Change 1: a missing or failed photo still leaves a product screen with buttons."""
@@ -389,7 +366,7 @@ class PhotoFallbackTests(SimpleTestCase):
         texto, keyboard = responder.await_args.args[2], responder.await_args.args[3]
         self.assertIn("(Imagem indisponível)", texto)
         callback_data = [b.callback_data for row in keyboard.inline_keyboard for b in row]
-        self.assertEqual(callback_data, ["encomendar_7", "cat_1"])
+        self.assertEqual(callback_data, ["carrinho_add_7", "carrinho_ver", "cat_1"])
 
     async def test_missing_file_edits_old_message_to_text(self):
         query, context, responder = await self._show(os.path.join(self.existing_path + "_missing"))
@@ -484,17 +461,6 @@ class MarkdownEscapingTests(SimpleTestCase):
             await inspect.unwrap(commands.start)(update, MagicMock())
         texto = update.message.reply_text.await_args.args[0]
         self.assertTrue(texto.startswith("Olá, *Ana*\\**_[x](y)*! "))
-
-    async def test_confirm_screen_escapes_the_product_name(self):
-        query = MagicMock()
-        responder = AsyncMock()
-        produto = SimpleNamespace(id=3, nome="SSD *Pro*", preco=Decimal("9.99"), stock_atual=2)
-        snap = SimpleNamespace(nonce=NONCE, linhas=[{"nome": "SSD *Pro*", "preco_unitario_centimos": 999}])
-        with patch.object(customer.services, "get_produto", AsyncMock(return_value=produto)), \
-             patch.object(customer.services, "criar_confirmacao_async", AsyncMock(return_value=("ok", snap))), \
-             patch.object(customer, "responder", responder):
-            await customer.encomendar(query, MagicMock(), "encomendar_3", 99)
-        self.assertIn("Produto: *SSD *\\**Pro*\\***\n", responder.await_args.args[2])
 
 
 class LogPrivacyTests(SimpleTestCase):
@@ -701,3 +667,140 @@ class CategoriaHandlerTests(SimpleTestCase):
     @staticmethod
     def _dados(teclado):
         return [b.callback_data for row in teclado.inline_keyboard for b in row]
+
+
+class CarrinhoHandlerTests(SimpleTestCase):
+    """Stage 3 cart screens. Mock-only: no database."""
+
+    def setUp(self):
+        self.query = MagicMock()
+        self.query.from_user.id = 99
+        self.query.answer = AsyncMock()
+        self.responder = AsyncMock()
+
+    def linha(self, nome="SSD", quantidade=1, preco="50.00", antes=None, stock=5, ativo=True, pid=7):
+        preco = Decimal(preco)
+        return customer.services.LinhaVista(pid, nome, quantidade, preco, Decimal(antes) if antes else preco,
+                                           stock, ativo)
+
+    async def _run(self, handler, data, **mocks):
+        wrapped = callbacks._RespostaUnica(self.query)
+        patches = [patch.object(customer.services, nome, AsyncMock(**valor)) for nome, valor in mocks.items()]
+        patches.append(patch.object(customer, "responder", self.responder))
+        for p in patches:
+            p.start()
+        try:
+            await handler(wrapped, MagicMock(), data, 99)
+            await wrapped.answer()
+        finally:
+            for p in patches:
+                p.stop()
+
+    def _ecra(self):
+        args, kwargs = self.responder.await_args
+        return args[2], _botoes(args[3]), kwargs.get("parse_mode", "Markdown")
+
+    async def test_add_button_answers_with_a_toast_and_keeps_the_screen(self):
+        for data in ("carrinho_add_7", "encomendar_7"):  # old product buttons add to the cart too
+            self.query.answer.reset_mock()
+            handler, _ = encontrar_rota(data)
+            self.assertIs(handler, customer.carrinho_add)
+            await self._run(handler, data, adicionar_ao_carrinho_async={"return_value": ("adicionado", 2)})
+            self.query.answer.assert_awaited_once_with("🛒 Adicionado ao carrinho (2).", show_alert=False)
+        self.responder.assert_not_awaited()
+
+    async def test_add_limit_and_bad_id_get_an_alert(self):
+        await self._run(customer.carrinho_add, "carrinho_add_7",
+                        adicionar_ao_carrinho_async={"return_value": ("limite_stock", 3)})
+        self.query.answer.assert_awaited_once_with("Não há mais stock deste produto.", show_alert=True)
+        self.query.answer.reset_mock()
+        await self._run(customer.carrinho_add, "carrinho_add_abc", adicionar_ao_carrinho_async={})
+        self.query.answer.assert_awaited_once_with(MENSAGEM_PEDIDO_INVALIDO, show_alert=True)
+
+    async def test_cart_screen_marks_lines_and_hides_checkout_when_blocked(self):
+        linhas = [self.linha("SSD", 2, "54.99", antes="49.99"), self.linha("RAM", 3, "10.00", stock=1, pid=8)]
+        await self._run(customer.carrinho_ver, "carrinho_ver",
+                        ver_carrinho_async={"return_value": (linhas, Decimal("139.98"))})
+        texto, botoes, parse_mode = self._ecra()
+        self.assertIsNone(parse_mode)
+        self.assertIn("• 2× SSD — 109.98€ ⚠️ preço alterado: 49.99€ → 54.99€", texto)
+        self.assertIn("• 3× RAM — 30.00€ ⚠️ só há 1 em stock", texto)
+        self.assertIn("Total: 139.98€", texto)
+        dados = [d for _, d in botoes]
+        self.assertEqual(dados[:3], ["carrinho_menos_7", "carrinho_mais_7", "carrinho_remover_7"])
+        self.assertNotIn("carrinho_finalizar", dados)
+        self.assertEqual(dados[-2:], ["menu_catalogo", "menu_inicio"])
+
+    async def test_price_change_alone_still_allows_checkout(self):
+        await self._run(customer.carrinho_ver, "carrinho_ver",
+                        ver_carrinho_async={"return_value": ([self.linha(preco="54.99", antes="49.99")], Decimal("54.99"))})
+        self.assertIn(("✅ Finalizar compra", "carrinho_finalizar"), self._ecra()[1])
+
+    async def test_empty_cart(self):
+        await self._run(customer.carrinho_ver, "carrinho_ver", ver_carrinho_async={"return_value": ([], Decimal("0"))})
+        texto, botoes, _ = self._ecra()
+        self.assertEqual(texto, "🛒 O teu carrinho está vazio.")
+        self.assertEqual([d for _, d in botoes], ["menu_catalogo", "menu_inicio"])
+
+    async def test_plus_at_a_limit_says_why_and_redraws(self):
+        await self._run(customer.carrinho_mais, "carrinho_mais_7",
+                        alterar_quantidade_async={"return_value": ("limite_quantidade", 99)},
+                        ver_carrinho_async={"return_value": ([self.linha(quantidade=99)], Decimal("4950.00"))})
+        self.query.answer.assert_awaited_once_with("Máximo de 99 unidades por produto.")
+        self.assertIn("99× SSD", self._ecra()[0])
+
+    async def test_checkout_shows_the_saved_screen_with_new_prices_marked(self):
+        snap = SimpleNamespace(nonce=NONCE, total_centimos=6498, linhas=[
+            {"produto_id": 7, "nome": "SSD", "quantidade": 1, "preco_unitario_centimos": 5499},
+            {"produto_id": 8, "nome": "RAM", "quantidade": 1, "preco_unitario_centimos": 999}])
+        await self._run(customer.carrinho_finalizar, "carrinho_finalizar",
+                        preparar_confirmacao_carrinho_async={"return_value": ("ok", snap, {7})})
+        texto, botoes, parse_mode = self._ecra()
+        self.assertIsNone(parse_mode)
+        self.assertIn("• 1× SSD — 54.99€ ⚠️ preço alterado\n• 1× RAM — 9.99€\n\nTotal: 64.98€", texto)
+        self.assertEqual(botoes, [("✅ Confirmar", f"confirmar_encomenda_{NONCE}"),
+                                  ("🔙 Voltar ao carrinho", "carrinho_ver")])
+
+    async def test_checkout_of_an_empty_or_blocked_cart_shows_the_cart(self):
+        for resultado in (("vazio", None, set()), ("bloqueado", [], set())):
+            await self._run(customer.carrinho_finalizar, "carrinho_finalizar",
+                            preparar_confirmacao_carrinho_async={"return_value": resultado},
+                            ver_carrinho_async={"return_value": ([], Decimal("0"))})
+            self.assertEqual(self._ecra()[0], "🛒 O teu carrinho está vazio.")
+
+    async def test_repeat_order_reports_what_was_reduced_or_skipped(self):
+        await self._run(customer.repetir_encomenda, "repetir_encomenda_5",
+                        repetir_encomenda_async={"return_value": (["SSD"], ["RAM"], ["GPU"])},
+                        ver_carrinho_async={"return_value": ([self.linha()], Decimal("50.00"))})
+        texto = self._ecra()[0]
+        self.assertIn("Nada foi encomendado", texto)
+        self.assertIn("Com menos unidades (stock ou limite): RAM", texto)
+        self.assertIn("Não adicionados (indisponíveis ou limite de 20 produtos): GPU", texto)
+        self.query.answer.reset_mock()
+        await self._run(customer.repetir_encomenda, "repetir_encomenda_5", repetir_encomenda_async={"return_value": None})
+        self.query.answer.assert_awaited_once_with(MENSAGEM_PEDIDO_INVALIDO, show_alert=True)
+
+    async def test_cart_screen_fits_telegram_at_20_long_lines(self):
+        linhas = [self.linha("x" * 200, 99, "99999.99", antes="1.00", stock=1, pid=i) for i in range(1, 21)]
+        await self._run(customer.carrinho_ver, "carrinho_ver",
+                        ver_carrinho_async={"return_value": (linhas, Decimal("197999980.20"))})
+        self.assertLess(len(self._ecra()[0]), 4096)
+
+    def test_new_callbacks_are_allowed_and_routed(self):
+        rotas = {
+            "carrinho_ver": customer.carrinho_ver, "carrinho_finalizar": customer.carrinho_finalizar,
+            "carrinho_add_7": customer.carrinho_add, "carrinho_mais_7": customer.carrinho_mais,
+            "carrinho_menos_7": customer.carrinho_menos, "carrinho_remover_7": customer.carrinho_remover,
+            "repetir_encomenda_5": customer.repetir_encomenda, "encomendar_7": customer.carrinho_add,
+        }
+        for data, handler in rotas.items():
+            self.assertEqual(validar_callback(data), data)
+            self.assertEqual(encontrar_rota(data), (handler, False), data)
+
+    def test_main_menu_and_product_screen_lead_to_the_cart(self):
+        with patch.object(keyboards, "is_admin", return_value=False):
+            menu = [d for _, d in _botoes(keyboards.teclado_menu_principal(99))]
+        self.assertIn("carrinho_ver", menu)
+        produto = SimpleNamespace(id=7, stock_atual=1, categoria_id=1)
+        self.assertEqual([d for _, d in _botoes(keyboards.teclado_produto(produto))],
+                         ["carrinho_add_7", "carrinho_ver", "cat_1"])

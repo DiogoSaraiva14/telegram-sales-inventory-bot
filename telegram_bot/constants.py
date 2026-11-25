@@ -44,7 +44,7 @@ ESTADO_EMOJI = {
 # ── Checkout (SEC-13; owner decisions D7, D8, D14, D21) ───────────────────
 
 MENSAGEM_MENU_EXPIRADO = "Este menu já não está disponível. Abre o catálogo novamente."
-MENSAGEM_ECRA_EXPIRADO = "Este ecrã expirou. Abre o produto novamente para continuar."
+MENSAGEM_ECRA_EXPIRADO = "Este ecrã expirou. Abre o carrinho para continuar."
 MENSAGEM_PEDIDO_INVALIDO = "❌ Pedido inválido."
 MENSAGEM_ENCOMENDA_PENDENTE = (
     "Já tens uma encomenda por pagar (#{id}). "
@@ -57,7 +57,24 @@ ROTULO_ALTERACAO = {
     'stock': "⚠️ sem stock suficiente",
     'inativo': "⚠️ indisponível",
     'removido': "⚠️ indisponível",
+    'carrinho': "⚠️ o carrinho mudou depois de abrires este ecrã",
 }
+
+# ── Carrinho (cart design, Stage 3) ───────────────────────────────────────
+
+MENSAGEM_CARRINHO_VAZIO = "🛒 O teu carrinho está vazio."
+RESULTADO_CARRINHO = {
+    'adicionado': "🛒 Adicionado ao carrinho ({quantidade}).",
+    'removido': "🗑 Removido do carrinho.",
+    'limite_stock': "Não há mais stock deste produto.",
+    'limite_quantidade': "Máximo de 99 unidades por produto.",
+    'limite_linhas': "O carrinho já tem 20 produtos diferentes.",
+    'indisponivel': "❌ Este produto não está disponível.",
+    'inexistente': "Este produto já não está no carrinho.",
+}
+MENSAGEM_REPETIDA = "🔁 Os produtos da encomenda foram juntos ao carrinho, aos preços atuais. Nada foi encomendado."
+MENSAGEM_REPETIDA_REDUZIDOS = "Com menos unidades (stock ou limite): {nomes}"
+MENSAGEM_REPETIDA_IGNORADOS = "Não adicionados (indisponíveis ou limite de 20 produtos): {nomes}"
 MENSAGEM_FALHA_REGISTO = "❌ Não foi possível registar a encomenda. Tenta novamente."
 MENSAGEM_JA_REGISTADA = "Esta encomenda já foi registada."
 MENSAGEM_PAGAMENTO_A_CONFIRMAR = (
