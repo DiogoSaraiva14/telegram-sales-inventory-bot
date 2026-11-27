@@ -1,8 +1,8 @@
 # Roadmap
 
-Status: draft sequencing from a static code review. Keep the work bounded; do not implement multiple phases at once.
+Status: Phases 0–5 and cart Stages 0–4 are done (2026-11-27). Remaining work is outside the code: a lawyer's review of the reseller contract, and deploying a copy for a real shop with live Stripe keys.
 
-## Progress (2026-11-24)
+## Progress (updated 2026-11-27)
 
 | Item | Phase | State |
 | --- | --- | --- |
@@ -15,13 +15,13 @@ Status: draft sequencing from a static code review. Keep the work bounded; do no
 | Fix the order-detail callback mismatch (SEC-12) | 1 | Done |
 | `.env.example`, environment validation, setup guide | 1 | Done (Python version documented as the one tested: 3.13) |
 | CI | 1 | Added: GitHub Actions runs check, migration drift and the PostgreSQL suite |
-| Expiry stock release (SEC-04) | 2 | Done for expired sessions; orders that never got a session still hold stock |
+| Expiry stock release (SEC-04) | 2 | Done: the expiry webhook cancels orders with an expired session; the 5-minute cleanup cancels pending orders older than the cutoff, with or without a session |
 | Webhook idempotency (SEC-05) | 2 | Done with row locks; customer messages queued and retried for 24 h |
 | Cancellation and refunds (SEC-06) | 2 | Done: one cancel operation for both admin surfaces, session expiry, full refunds; closes the checkout cancellation window |
 | Safe settings defaults (SEC-01) | 4 | Done; HTTPS, cookie and HSTS settings added in cart Stage 4 (opt-in with `DJANGO_HTTPS`) |
-| Escape dynamic Telegram Markdown (SEC-07) | 4 | Done; not checked against live Telegram |
+| Escape dynamic Telegram Markdown (SEC-07) | 4 | Done; covered by mock tests with Markdown characters in names, not checked against live Telegram with such names |
 | No raw Telegram ids, usernames or bot token in logs (SEC-08) | 4 | Done; bot logs rotate daily, 14 days kept |
-| Release stock of abandoned orders without a payment session (SEC-03) | 2 | Done: `manage.py cancelar_encomendas_abandonadas`, to be scheduled |
+| Release stock of abandoned orders without a payment session (SEC-03) | 2 | Done: `manage.py cancelar_encomendas_abandonadas --horas 1`, scheduled every 5 minutes (`deploy/crontab.example`) |
 | Process product images once, through storage (SEC-11) | 4 | Done |
 | Bounded in-process rate and session state (SEC-09) | 3 | Done; single polling process documented |
 
@@ -31,12 +31,13 @@ The plan is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_
 
 | Stage | What | State |
 | --- | --- | --- |
-| 0 | Code ownership and course rights, licence, demo-image rights, invoicing clause, one Stripe test run | Rights, licence and images settled (2026-11-27). Open: the invoicing clause in the reseller contract and the rest of the Stripe checklist |
+| 0 | Code ownership and course rights, licence, demo-image rights, invoicing clause, one Stripe test run | Done (2026-11-27). The invoicing clause is drafted in the reseller contract, which still needs a lawyer's review |
 | 1 | Categories in the database (migrations 0009–0011) | Done |
 | 2 | Multi-line orders from saved confirmation screens, 60-minute payment window, reconciling cleanup (0012) | Done |
 | 3 | Cart, "Repetir encomenda", draft retention (0013) | Done |
 | 4 | Shop settings, Telegram admin flag, "Dono da loja" group, HTTPS settings, DEPLOYMENT.md (0014–0015) | Done |
-| — | End-to-end run in Stripe test mode with a real webhook (G13) | Not done |
+| — | End-to-end run in Stripe test mode with a real webhook (G13) | Done (2026-11-27): payment, shipping, delivery, cancellation, refund, price change and the 60-minute expiry |
+| — | Portuguese or English per user, for customers and Telegram admins (0017) | Done (2026-11-27) |
 | — | Customer "cancel my pending order" button, abandoned-cart reminders, a welcome image | Deferred |
 
 ## Phase 0 — Confirm scope and ownership
@@ -97,6 +98,6 @@ The plan is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_
 - Create a polished README, architecture diagram, screenshots or short demo, test results, and a truthful feature list. (Done.)
 - Replace third-party sample images with licensed assets or synthetic fixtures. (Done: `manage.py criar_demo` generates placeholders.)
 - Add license/attribution only after ownership is confirmed. (Done: ownership confirmed by the owner; `LICENSE` reserves all rights; third-party notices added.)
-- Publish only after course/team sharing approval and the user explicitly chooses to make the repository public. (Ready; the repository stays private until the owner changes its visibility.)
+- Publish only after course/team sharing approval and the user explicitly chooses to make the repository public. (Done: public since 2026-11-27, all rights reserved.)
 
 **Done when:** a reviewer can understand, run, and assess the project without access to private accounts or real customer data.
