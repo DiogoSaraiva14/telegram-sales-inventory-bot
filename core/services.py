@@ -99,7 +99,8 @@ def _auditar(admin_telegram_id, acao, entidade, descricao):
 def alternar_utilizador_ativo(telegram_id: str, admin_telegram_id) -> tuple:
     """Block or unblock a customer from the locked row, with its audit row: (utilizador, now_active)."""
     with transaction.atomic():
-        utilizador = Utilizador.objects.select_for_update().get(telegram_id=telegram_id)
+        # FOR NO KEY UPDATE: a checkout's foreign-key lock on this row doesn't wait for the block.
+        utilizador = Utilizador.objects.select_for_update(no_key=True).get(telegram_id=telegram_id)
         utilizador.ativo = not utilizador.ativo
         # update(), not save(): a full save could undo a concurrent e_admin change in Django admin.
         Utilizador.objects.filter(pk=utilizador.pk).update(ativo=utilizador.ativo)

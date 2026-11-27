@@ -19,8 +19,11 @@ def _definir_ativo(request, queryset, ativo, acao, descrever):
     Rows are locked in one query ordered by id, as in checkout (no deadlocks). Returns how many changed.
     """
     modelo = queryset.model
+    # Customer rows: FOR NO KEY UPDATE, so a checkout's foreign-key lock on the row doesn't wait.
+    no_key = modelo is Utilizador
     with transaction.atomic():
-        alvos = [o for o in modelo.objects.select_for_update().filter(pk__in=queryset.values('pk')).order_by('pk')
+        alvos = [o for o in modelo.objects.select_for_update(no_key=no_key)
+                 .filter(pk__in=queryset.values('pk')).order_by('pk')
                  if o.ativo != ativo]
         modelo.objects.filter(pk__in=[o.pk for o in alvos]).update(ativo=ativo)
         RegistoAuditoria.objects.bulk_create([

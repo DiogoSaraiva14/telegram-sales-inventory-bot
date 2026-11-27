@@ -1984,3 +1984,21 @@ class FilaNotificacoesTests(TestCase):
             saida = StringIO()
             call_command("cancelar_encomendas_abandonadas", "--horas", "1", stdout=saida)
         self.assertIn("notificações: 1 reenviada(s), 0 abandonada(s)", saida.getvalue())
+
+
+class BloqueioClienteSemChaveTests(TestCase):
+    """Blocking a customer locks the row FOR NO KEY UPDATE, so a checkout's foreign-key lock doesn't wait."""
+
+    def test_both_block_actions_use_a_no_key_lock(self):
+        from types import SimpleNamespace
+        from django.contrib.admin.sites import AdminSite
+        from django.test.utils import CaptureQueriesContext
+        from core.admin import UtilizadorAdmin
+        ana = Utilizador.objects.create(telegram_id="801", nome="Ana")
+        modelo = UtilizadorAdmin(Utilizador, AdminSite())
+        with CaptureQueriesContext(connection) as consultas, patch.object(modelo, "message_user"):
+            services.alternar_utilizador_ativo("801", None)
+            modelo.bloquear_utilizadores(SimpleNamespace(user="dono"), Utilizador.objects.filter(pk=ana.pk))
+        bloqueios = [q["sql"] for q in consultas.captured_queries if " FOR " in q["sql"]]
+        self.assertEqual(len(bloqueios), 2)
+        self.assertTrue(all("FOR NO KEY UPDATE" in sql for sql in bloqueios), bloqueios)
