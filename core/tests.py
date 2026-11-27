@@ -1860,7 +1860,7 @@ class AcoesAdminTransacionaisTests(TestCase):
         self.assertEqual(self.ultimo_registo(), ("AJUSTE_STOCK", self.admin.pk, "Atomico: delta=-2, novo stock=3"))
         utilizador, ativo = services.alternar_utilizador_ativo("901", 900)
         self.assertEqual((utilizador.pk, ativo), (self.cliente.pk, False))
-        self.assertEqual(self.ultimo_registo(), ("BLOQUEAR_UTILIZADOR", self.admin.pk, "Cliente (telegram_id=901)"))
+        self.assertEqual(self.ultimo_registo(), ("BLOQUEAR_UTILIZADOR", self.admin.pk, f"Cliente #{self.cliente.pk}"))
 
     def test_an_admin_without_a_customer_row_is_still_audited(self):
         services.alternar_produto_ativo(self.produto.pk, 12345)
@@ -1913,7 +1913,7 @@ class AuditoriaAcoesDjangoTests(TestCase):
             self.utilizadores.bloquear_utilizadores(self.pedido, Utilizador.objects.filter(pk=ana.pk))
             self.utilizadores.desbloquear_utilizadores(self.pedido, Utilizador.objects.filter(pk=ana.pk))
         self.assertEqual([r[0] for r in self.registos()], ["BLOQUEAR_UTILIZADOR", "DESBLOQUEAR_UTILIZADOR"])
-        self.assertEqual(self.registos()[0][2], "Ana (telegram_id=701) (Django admin: dono)")
+        self.assertEqual(self.registos()[0][2], f"Cliente #{ana.pk} (Django admin: dono)")
         self.assertTrue(Utilizador.objects.get(pk=ana.pk).ativo)
 
     def test_a_failed_audit_leaves_the_rows_unchanged(self):
@@ -1991,7 +1991,7 @@ class FilaNotificacoesTests(TestCase):
             self.notificar()
             saida = StringIO()
             call_command("cancelar_encomendas_abandonadas", "--horas", "1", stdout=saida)
-        self.assertIn("notificações: 1 enviada(s), 0 abandonada(s)", saida.getvalue())
+        self.assertIn("notificações: 1 enviada(s), 0 abandonada(s), 0 antiga(s) apagada(s)", saida.getvalue())
 
 
 class BloqueioClienteSemChaveTests(TestCase):
@@ -2076,3 +2076,55 @@ class NotificacaoNaTransacaoTests(TestCase):
         self.encomenda.refresh_from_db()
         self.assertEqual(services._terminar_prazo(self.encomenda, "teste"), ("expirada", None))
         self.assertFalse(Notificacao.objects.exists())
+
+
+class DadosPessoaisTests(TestCase):
+    """Phase 4 owner decisions (2026-11-27): audit text, message retention and anonymisation."""
+
+    def setUp(self):
+        self.ana = Utilizador.objects.create(telegram_id="831", nome="Ana Pessoa", username="ana_p",
+                                             motivo_bloqueio="ligou a reclamar")
+        self.encomenda = Encomenda.objects.create(utilizador=self.ana, estado="entregue", total=Decimal("7.00"))
+
+    def test_sent_and_given_up_messages_go_after_30_days(self):
+        from core import notificacoes
+        velha = timezone.now() - timedelta(days=30, minutes=1)
+        for estado in ("enviada", "falhada", "pendente"):
+            Notificacao.objects.create(encomenda=self.encomenda, chat_id="831", texto="x", estado=estado)
+        Notificacao.objects.create(encomenda=self.encomenda, chat_id="831", texto="recente", estado="enviada")
+        Notificacao.objects.exclude(texto="recente").update(criada=velha)
+        self.assertEqual(notificacoes.apagar_antigas(), 2)
+        self.assertEqual(sorted(Notificacao.objects.values_list("estado", flat=True)), ["enviada", "pendente"])
+
+    def test_anonymising_removes_personal_data_and_keeps_the_orders(self):
+        Carrinho.objects.create(utilizador=self.ana)
+        Notificacao.objects.create(encomenda=self.encomenda, chat_id="831", texto="x", estado="enviada")
+        services.anonimizar_utilizador(self.ana.pk, "teste")
+        u = Utilizador.objects.get(pk=self.ana.pk)
+        self.assertEqual((u.nome, u.username, u.telegram_id, u.motivo_bloqueio, u.ativo, u.e_admin),
+                         ("Cliente removido", None, f"removido-{u.pk}", None, False, False))
+        self.assertEqual(Encomenda.objects.get(pk=self.encomenda.pk).utilizador_id, u.pk)
+        self.assertFalse(Carrinho.objects.filter(utilizador=u).exists())
+        self.assertFalse(Notificacao.objects.exists())
+        self.assertEqual(RegistoAuditoria.objects.get(acao="ANONIMIZAR_UTILIZADOR").descricao,
+                         f"Cliente #{u.pk} anonimizado (teste)")
+
+    def test_a_customer_with_an_order_in_progress_is_not_anonymised(self):
+        Encomenda.objects.filter(pk=self.encomenda.pk).update(estado="enviada")
+        with self.assertRaises(services.ClienteComEncomendasAtivas):
+            services.anonimizar_utilizador(self.ana.pk, "teste")
+        self.assertEqual(Utilizador.objects.get(pk=self.ana.pk).nome, "Ana Pessoa")
+
+    def test_only_a_superuser_gets_the_anonymise_action(self):
+        from django.contrib.admin.sites import AdminSite
+        from django.contrib.auth.models import Permission, User
+        from django.test import RequestFactory
+        from core.admin import UtilizadorAdmin
+        modelo = UtilizadorAdmin(Utilizador, AdminSite())
+        pedido = RequestFactory().get("/admin/core/utilizador/")
+        staff = User.objects.create_user("staff", is_staff=True)
+        staff.user_permissions.add(*Permission.objects.filter(codename__in=["view_utilizador", "change_utilizador"]))
+        pedido.user = User.objects.get(pk=staff.pk)  # fresh object: no cached permissions
+        self.assertNotIn("anonimizar_utilizadores", modelo.get_actions(pedido))
+        pedido.user = User.objects.create_superuser("raiz", password=None)
+        self.assertIn("anonimizar_utilizadores", modelo.get_actions(pedido))

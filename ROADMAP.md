@@ -86,7 +86,7 @@ The plan is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_
 - Fail safely when SECRET_KEY, database, Telegram, or Stripe configuration is missing.
 - Replace DEBUG=True and wildcard ALLOWED_HOSTS defaults with explicit environment-specific settings.
 - Define HTTPS, trusted-host, cookie, and webhook deployment settings.
-- Review PII in logs and audit descriptions; document retention and access.
+- Review PII in logs and audit descriptions; document retention and access. (Done: audit text uses internal customer ids, stored messages are deleted after 30 days, Django admin can anonymise a customer, and DEPLOYMENT.md lists what is kept, for how long and who sees it.)
 - Escape dynamic Telegram Markdown, validate uploaded images, and avoid repeated lossy image conversion.
 - Pin only intentional direct dependencies and document update policy. (Done: `requirements.in` lists the direct packages, `requirements.txt` is generated from it, and README.md has the update policy.)
 

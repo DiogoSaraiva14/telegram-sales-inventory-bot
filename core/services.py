@@ -25,7 +25,7 @@ from django.utils import timezone
 
 from core.models import (
     Utilizador, Categoria, Carrinho, Loja, ConfirmacaoCarrinho, LinhaCarrinho, Produto, Encomenda, LinhaEncomenda,
-    MovimentoStock, RegistoAuditoria, Pagamento,
+    MovimentoStock, RegistoAuditoria, Pagamento, Notificacao,
 )
 from security.sanitization import validar_telegram_id, sanitizar_nome_utilizador
 from core.notificacoes import enfileirar
@@ -106,8 +106,33 @@ def alternar_utilizador_ativo(telegram_id: str, admin_telegram_id) -> tuple:
         # update(), not save(): a full save could undo a concurrent e_admin change in Django admin.
         Utilizador.objects.filter(pk=utilizador.pk).update(ativo=utilizador.ativo)
         _auditar(admin_telegram_id, "DESBLOQUEAR_UTILIZADOR" if utilizador.ativo else "BLOQUEAR_UTILIZADOR",
-                 "Utilizador", f"{utilizador.nome} (telegram_id={telegram_id})")
+                 "Utilizador", f"Cliente #{utilizador.pk}")  # no name or Telegram id in audit text
     return utilizador, utilizador.ativo
+
+class ClienteComEncomendasAtivas(Exception):
+    """The customer still has a pending, confirmed or shipped order, so they can't be anonymised yet."""
+
+
+def anonimizar_utilizador(utilizador_id: int, origem: str):
+    """Remove a customer's personal data on request; their orders and audit rows stay for the accounts.
+
+    Replaces name, username and Telegram id, clears the block reason, blocks the row, deletes
+    their cart, unused confirmation screens and stored messages, and writes one audit row, all in
+    one transaction. Raises ClienteComEncomendasAtivas while an order is still in progress.
+    """
+    with transaction.atomic():
+        u = Utilizador.objects.select_for_update(no_key=True).get(pk=utilizador_id)
+        if Encomenda.objects.filter(utilizador=u, estado__in=('pendente', 'confirmada', 'enviada')).exists():
+            raise ClienteComEncomendasAtivas(utilizador_id)
+        Utilizador.objects.filter(pk=u.pk).update(
+            nome="Cliente removido", username=None, telegram_id=f"removido-{u.pk}",
+            motivo_bloqueio=None, ativo=False, e_admin=False)
+        Carrinho.objects.filter(utilizador=u).delete()
+        ConfirmacaoCarrinho.objects.filter(utilizador=u, encomenda__isnull=True).delete()
+        Notificacao.objects.filter(encomenda__utilizador=u).delete()  # each row holds the Telegram chat id
+        RegistoAuditoria.objects.create(acao='ANONIMIZAR_UTILIZADOR', entidade='Utilizador',
+                                        descricao=f"Cliente #{u.pk} anonimizado ({origem})")
+
 
 async def alternar_utilizador_ativo_async(telegram_id: str, admin_telegram_id) -> tuple:
     return await sync_to_async(alternar_utilizador_ativo)(telegram_id, admin_telegram_id)

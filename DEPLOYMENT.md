@@ -125,12 +125,41 @@ Each run:
   - a Stripe or database error: the order is left as it is and retried on the next run;
 - deletes confirmation screens that never became an order, after 45 minutes;
 - deletes carts with no change for 30 days;
+- deletes sent or given-up customer messages after 30 days;
 - resends customer messages that Telegram didn't accept yet. After 24 hours, or at once if Telegram refuses the chat (the customer blocked the bot), a message is given up and a "Notificação falhada" row is added to the audit log;
 - prints one summary line: confirmed, cancelled, errors, the screens and carts deleted, and the messages resent and given up.
 
 **Setup check:** run the command once by hand, then confirm that a second summary line appears in `logs/limpeza.log` within 5 minutes.
 
 **Watching it:** check the log daily. Investigate when the error count stays above zero across runs, or when summary lines stop appearing. Until a run succeeds, an affected order keeps holding its stock, so the 65-minute limit on held stock applies only while the cleanup, Stripe and the database are working. There is no automatic alert.
+
+## Personal data: what is kept, and who sees it
+
+Each shop is the controller of its customers' data and writes its own privacy notice. This section describes what the software stores; it is not legal advice.
+
+| Data | Where | Kept |
+| --- | --- | --- |
+| Telegram id, name, username, block reason | `Utilizador` | until the customer is anonymised (below) |
+| Cart | `Carrinho` | deleted 30 days after the last change |
+| Confirmation screens without an order | `ConfirmacaoCarrinho` | deleted after 45 minutes |
+| Orders, order lines, payments, the screens they came from | `Encomenda`, `LinhaEncomenda`, `Pagamento`, `ConfirmacaoCarrinho` | kept: each shop sets its own period from its invoicing and tax duties |
+| Audit log | `RegistoAuditoria` | kept, as above. Descriptions name customers only by internal id ("Cliente #12"); the row links to the customer, so the name shows only while it exists |
+| Customer messages (Telegram chat id, order number, total) | `Notificacao` | deleted 30 days after being sent or given up |
+| Bot log | `logs/bot.log` | 14 daily files. Customers appear only as a keyed pseudonym (SEC-08) |
+| Database backups | the shop's backup location | as long as the shop keeps them; an anonymised customer stays in older backups |
+
+**Deleting old orders:** the software never deletes orders on its own. If a shop's retention period requires it, the reseller deletes them by date from the database, after a backup, and records it.
+
+**A customer asks to have their data removed:** in Django admin, the reseller's superuser selects the customer and runs **Anonimizar (pedido de remoção de dados)**. It replaces the name, username and Telegram id, clears the block reason, blocks the row, deletes the cart, unused confirmation screens and stored messages, and adds an audit row. Orders and payments stay for the accounts, linked to "Cliente removido". It refuses a customer with an order still pending, confirmed or shipped: finish or cancel that order first. If the person writes to the bot again later, they start as a new customer.
+
+**Who sees what:**
+
+| Who | Sees |
+| --- | --- |
+| Reseller's superuser (Django admin) | everything, and is the only one who can anonymise customers or grant Telegram admin rights |
+| Shop owner ("Dono da loja" group, Django admin) | products, categories, shop settings, and orders and payments read-only (an order shows the customer's name and Telegram id). Not the customer list or the audit log |
+| Telegram admins (`/admin`) | customer names and usernames, order details including the customer's Telegram id, and the audit log |
+| Server access | the database, backups and `logs/` |
 
 ## 10. Stripe test-mode checklist
 
