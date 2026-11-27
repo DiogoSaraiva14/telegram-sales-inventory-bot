@@ -42,10 +42,31 @@ class Loja(models.Model):
     """The shop's own settings: one row (pk=1) per copy of the bot."""
     nome              = models.CharField(max_length=80, default="Loja")
     texto_boas_vindas = models.CharField(max_length=1000, default=TEXTO_BOAS_VINDAS_PADRAO)
+    # Optional photo sent above the /start welcome; chosen by the shop in Django admin.
+    imagem_boas_vindas = models.ImageField(
+        upload_to='loja/', blank=True, null=True, verbose_name="Imagem de boas-vindas",
+        help_text="Opcional. Enviada por cima da mensagem de boas-vindas em /start. "
+                  "Guardada como JPEG, com o lado maior reduzido a 1280 px.")
+
+    _IMAGEM_LADO_MAX = 1280
 
     def save(self, *args, **kwargs):
         self.pk = 1
+        if self.imagem_boas_vindas and not self.imagem_boas_vindas._committed:  # only a new upload (SEC-11)
+            self._preparar_imagem()
         super().save(*args, **kwargs)
+
+    def _preparar_imagem(self):
+        """Keep the shape, shrink to at most 1280 px on the long side, and encode as JPEG once."""
+        ficheiro = self.imagem_boas_vindas.file
+        ficheiro.seek(0)
+        with PilImage.open(ficheiro) as original:
+            img = original.convert('RGB')
+        img.thumbnail((self._IMAGEM_LADO_MAX, self._IMAGEM_LADO_MAX), PilImage.LANCZOS)
+        saida = BytesIO()
+        img.save(saida, 'JPEG', quality=85, optimize=True)
+        nome = os.path.splitext(os.path.basename(self.imagem_boas_vindas.name))[0] + '.jpg'
+        self.imagem_boas_vindas = ContentFile(saida.getvalue(), name=nome)
 
     def __str__(self):
         return self.nome

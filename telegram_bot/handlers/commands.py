@@ -1,5 +1,8 @@
 """Slash-command handlers: /start and /admin."""
+import logging
+
 from telegram import Update
+from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from core import services
@@ -9,6 +12,22 @@ from telegram_bot.handlers.admin import titulo_admin
 from telegram_bot.keyboards import teclado_menu_principal, teclado_admin_menu
 from telegram_bot.traducoes import tr
 from telegram_bot.ui import guardar_idioma, idioma, md
+
+logger = logging.getLogger(__name__)
+
+
+async def _enviar_imagem_boas_vindas(update, loja):
+    """The shop's welcome photo, if it set one; a missing or failed photo never blocks /start.
+
+    Sent on its own, above the text: the menu stays a text message that later screens can edit.
+    """
+    if not loja.imagem_boas_vindas:
+        return
+    try:
+        with loja.imagem_boas_vindas.open('rb') as foto:  # through the storage API (SEC-11)
+            await update.message.reply_photo(photo=foto)
+    except (OSError, TelegramError):
+        logger.warning("Imagem de boas-vindas indisponível", exc_info=True)
 
 
 @rate_limit
@@ -21,6 +40,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     guardar_idioma(context, i)
     loja = await services.obter_loja_async()
     saudacao = tr(i, "Bem-vindo! 👋") if criado else tr(i, "Bem-vindo de volta! 👋")
+    await _enviar_imagem_boas_vindas(update, loja)
     await update.message.reply_text(
         # The shop's name and welcome text stay as the shop wrote them.
         tr(i, "Olá, *{nome}*! {saudacao}\n\n*{loja}*\n{boas_vindas}").format(

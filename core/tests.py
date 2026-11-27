@@ -2192,3 +2192,27 @@ class IdiomaClienteTests(TestCase):
             texto = encomenda.notificacoes.get().texto
             self.assertTrue(texto.startswith(inicio), texto)
             self.assertIn("9.99€", texto)
+
+
+@override_settings(STORAGES={"default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
+                             "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}})
+class ImagemBoasVindasTests(TestCase):
+    """The shop's welcome photo keeps its shape, is shrunk to 1280 px and encoded as JPEG once."""
+
+    def test_upload_is_resized_once_and_kept_wide(self):
+        from io import BytesIO
+        from PIL import Image
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        bruto = BytesIO()
+        Image.new("RGBA", (2560, 1000), (10, 20, 30, 255)).save(bruto, "PNG")
+        loja = services.obter_loja()
+        loja.imagem_boas_vindas = SimpleUploadedFile("banner.png", bruto.getvalue(), content_type="image/png")
+        loja.save()
+        loja = Loja.objects.get(pk=1)
+        self.assertTrue(loja.imagem_boas_vindas.name.endswith(".jpg"))
+        with loja.imagem_boas_vindas.open("rb") as f, Image.open(f) as img:
+            self.assertEqual((img.format, img.size), ("JPEG", (1280, 500)))
+        nome = loja.imagem_boas_vindas.name
+        loja.texto_boas_vindas = "Outro texto"
+        loja.save()  # a text change never re-encodes the stored photo
+        self.assertEqual(Loja.objects.get(pk=1).imagem_boas_vindas.name, nome)

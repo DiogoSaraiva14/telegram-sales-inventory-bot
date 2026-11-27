@@ -79,7 +79,7 @@ The superuser is the reseller's account. It has every permission, including canc
 
 Sign in at `https://<host>/admin/` with the superuser.
 
-1. **Loja:** the shop name and welcome text shown by `/start` and on the admin panel. There is one row; the list opens it.
+1. **Loja:** the shop name and welcome text shown by `/start` and on the admin panel, and an optional welcome image sent above the `/start` message (any common image format; stored as JPEG with its long side at most 1280 px, shape kept). The "Dono da loja" group can change all three. There is one row; the list opens it.
 2. **Categorias:** add the shop's categories. Use the order field to sort them. Deactivate a category instead of deleting it; deleting is disabled.
 3. **Produtos:** add the products, each in a category, with price, stock and an optional image. Deactivate products instead of deleting them.
 

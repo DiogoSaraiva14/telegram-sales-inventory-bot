@@ -93,7 +93,7 @@ class UtilizadorAdmin(admin.ModelAdmin):
 @admin.register(Loja)
 class LojaAdmin(admin.ModelAdmin):
     """One settings row per shop: no add or delete; the list opens that row."""
-    fields = ['nome', 'texto_boas_vindas']
+    fields = ['nome', 'texto_boas_vindas', 'imagem_boas_vindas']
 
     def has_add_permission(self, request):
         return False
