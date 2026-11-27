@@ -2128,3 +2128,40 @@ class DadosPessoaisTests(TestCase):
         self.assertNotIn("anonimizar_utilizadores", modelo.get_actions(pedido))
         pedido.user = User.objects.create_superuser("raiz", password=None)
         self.assertIn("anonimizar_utilizadores", modelo.get_actions(pedido))
+
+
+class CriarDemoTests(TestCase):
+    """manage.py criar_demo: a catalogue with generated placeholder photos, only on a database without other products."""
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        pasta = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, pasta, ignore_errors=True)
+        definicoes = override_settings(MEDIA_ROOT=pasta)
+        definicoes.enable()
+        self.addCleanup(definicoes.disable)
+
+    def correr(self):
+        from io import StringIO
+        from django.core.management import call_command
+        saida = StringIO()
+        call_command("criar_demo", stdout=saida)
+        return saida.getvalue()
+
+    def test_creates_the_catalogue_once_with_generated_photos(self):
+        from PIL import Image
+        self.assertIn("6 produto(s) criado(s), 6 imagem(ns) gerada(s)", self.correr())
+        self.assertEqual(Categoria.objects.count(), 3)
+        produto = Produto.objects.get(nome="RAM Demo 16GB")
+        self.assertEqual((produto.stock_atual, Loja.objects.get().nome), (10, "Loja Demo"))
+        with produto.imagem.open("rb") as f:
+            self.assertEqual(Image.open(f).format, "JPEG")  # processed like an uploaded photo (SEC-11)
+        self.assertIn("0 produto(s) criado(s), 0 imagem(ns) gerada(s)", self.correr())  # safe to run again
+
+    def test_refuses_a_database_with_other_products(self):
+        from django.core.management.base import CommandError
+        criar_produto(nome="Produto real")
+        with self.assertRaises(CommandError):
+            self.correr()
+        self.assertEqual(Produto.objects.count(), 1)
