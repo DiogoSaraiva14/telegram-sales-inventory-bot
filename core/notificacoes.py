@@ -15,6 +15,7 @@ from django.utils import timezone
 
 from core.models import Notificacao, RegistoAuditoria
 from telegram_bot.constants import MENSAGENS_NOTIFICACAO
+from telegram_bot.traducoes import tr
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ ENVIADA, PERMANENTE, TEMPORARIA = 'enviada', 'permanente', 'temporaria'
 
 def enfileirar(encomenda, chave):
     """Queue the customer message chave (a MENSAGENS_NOTIFICACAO key); call it inside the change's transaction."""
-    texto = MENSAGENS_NOTIFICACAO[chave].format(id=encomenda.id, total=float(encomenda.total))
+    texto = tr(encomenda.utilizador.idioma, MENSAGENS_NOTIFICACAO[chave]).format(id=encomenda.id, total=float(encomenda.total))
     Notificacao.objects.create(encomenda=encomenda, chat_id=encomenda.utilizador.telegram_id, texto=texto)
 
 

@@ -2,6 +2,8 @@
 
 Each handler takes (query, context, data, user_id). The admin permission
 check runs in telegram_bot.handlers.callbacks before any handler here.
+Screens follow the admin's own bot language; stored data (names, audit
+descriptions) is shown as it was written.
 """
 import logging
 
@@ -15,24 +17,22 @@ from security.sanitization import sanitizar_id, sanitizar_delta_stock, EntradaIn
 from django.utils import timezone
 
 from telegram_bot.constants import ESTADO_EMOJI, ROTULO_AUDITORIA
-from telegram_bot.ui import md, responder
+from telegram_bot.traducoes import estado, tr
+from telegram_bot.ui import idioma, md, responder
 from telegram_bot import keyboards as kb
 
 logger = logging.getLogger(__name__)
 
 
-def _texto_produto(p):
-    estado = "✅ Ativo" if p.ativo else "❌ Inativo"
-    return (
-        f"📦 *{md(p.nome, '*')}*\n\n"
-        f"💶 Preço: *{p.preco:.2f}€*\n"
-        f"📦 Stock: *{p.stock_atual}* unidades\n"
-        f"📁 Categoria: {md(p.categoria.nome)}\n"
-        f"Estado: {estado}"
-    )
+def _texto_produto(p, i="pt"):
+    return tr(i, "📦 *{nome}*\n\n💶 Preço: *{preco:.2f}€*\n📦 Stock: *{stock}* unidades\n"
+                 "📁 Categoria: {categoria}\nEstado: {estado}").format(
+        nome=md(p.nome, '*'), preco=p.preco, stock=p.stock_atual, categoria=md(p.categoria.nome),
+        estado=tr(i, "✅ Ativo") if p.ativo else tr(i, "❌ Inativo"))
 
-def _texto_stock(p):
-    return f"📊 *Stock — {md(p.nome, '*')}*\n\nStock atual: *{p.stock_atual}* unidades\n\nAjusta o stock:"
+def _texto_stock(p, i="pt"):
+    return tr(i, "📊 *Stock — {nome}*\n\nStock atual: *{stock}* unidades\n\nAjusta o stock:").format(
+        nome=md(p.nome, '*'), stock=p.stock_atual)
 
 
 def _numero_pagina(data, prefixo):
@@ -43,27 +43,30 @@ def _numero_pagina(data, prefixo):
 
 async def _lista(query, context, data, prefixo, obter, teclado, titulo, legenda, vazio):
     """One page of an admin list; a page past the end shows the first page."""
+    i = await idioma(context, query.from_user)
     pagina = _numero_pagina(data, prefixo)
     linhas, ha_mais = await obter(pagina)
     if not linhas and pagina:
         pagina = 0
         linhas, ha_mais = await obter(0)
     if not linhas:
-        await responder(query, context, vazio, kb.teclado_voltar_admin())
+        await responder(query, context, tr(i, vazio), kb.teclado_voltar_admin(i))
         return
+    titulo = tr(i, titulo)
     if pagina or ha_mais:
-        titulo += f" · página {pagina + 1}"
-    await responder(query, context, f"{titulo}\n{legenda}", teclado(linhas, pagina, ha_mais))
+        titulo += tr(i, " · página {n}").format(n=pagina + 1)
+    await responder(query, context, f"{titulo}\n{tr(i, legenda)}", teclado(linhas, pagina, ha_mais, i))
 
 
 # ── Menu ───────────────────────────────────────────────────────────────────
 
-def titulo_admin(loja):
-    return f"🔐 *Painel Admin — {md(loja.nome, '*')}*\n\nO que pretendes gerir?"
+def titulo_admin(loja, i="pt"):
+    return tr(i, "🔐 *Painel Admin — {loja}*\n\nO que pretendes gerir?").format(loja=md(loja.nome, '*'))
 
 
 async def admin_menu(query, context, data, user_id):
-    await responder(query, context, titulo_admin(await services.obter_loja_async()), kb.teclado_admin_menu())
+    i = await idioma(context, query.from_user)
+    await responder(query, context, titulo_admin(await services.obter_loja_async(), i), kb.teclado_admin_menu(i))
 
 
 # ── Produtos ───────────────────────────────────────────────────────────────
@@ -74,21 +77,23 @@ async def produtos(query, context, data, user_id):
                  "📦 Sem produtos na base de dados.")
 
 async def produto_detalhe(query, context, data, user_id):
+    i = await idioma(context, query.from_user)
     try:
         p = await services.get_produto_admin(sanitizar_id(data.split("_")[-1], campo="produto_id"))
     except (EntradaInvalida, Produto.DoesNotExist, ValueError):
-        await responder(query, context, "❌ Produto não encontrado.", kb.teclado_voltar_admin())
+        await responder(query, context, tr(i, "❌ Produto não encontrado."), kb.teclado_voltar_admin(i))
         return
-    await responder(query, context, _texto_produto(p), kb.teclado_produto_acao(p))
+    await responder(query, context, _texto_produto(p, i), kb.teclado_produto_acao(p, i))
 
 async def produto_toggle(query, context, data, user_id):
+    i = await idioma(context, query.from_user)
     try:
         p = await services.alternar_produto_ativo_async(sanitizar_id(data.split("_")[-1], campo="produto_id"), user_id)
     except (EntradaInvalida, Produto.DoesNotExist, ValueError):
-        await responder(query, context, "❌ Produto não encontrado.", kb.teclado_voltar_admin())
+        await responder(query, context, tr(i, "❌ Produto não encontrado."), kb.teclado_voltar_admin(i))
         return
-    await query.answer(f"Produto {'✅ ativado' if p.ativo else '❌ desativado'}.", show_alert=False)
-    await responder(query, context, _texto_produto(p), kb.teclado_produto_acao(p))
+    await query.answer(tr(i, "Produto ✅ ativado.") if p.ativo else tr(i, "Produto ❌ desativado."), show_alert=False)
+    await responder(query, context, _texto_produto(p, i), kb.teclado_produto_acao(p, i))
 
 
 # ── Stock ──────────────────────────────────────────────────────────────────
@@ -99,24 +104,26 @@ async def stock(query, context, data, user_id):
                  "📦 Sem produtos na base de dados.")
 
 async def stock_produto(query, context, data, user_id):
+    i = await idioma(context, query.from_user)
     try:
         p = await services.get_produto_admin(sanitizar_id(data.split("_")[-1], campo="produto_id"))
     except (EntradaInvalida, Produto.DoesNotExist, ValueError):
-        await responder(query, context, "❌ Produto não encontrado.", kb.teclado_voltar_admin())
+        await responder(query, context, tr(i, "❌ Produto não encontrado."), kb.teclado_voltar_admin(i))
         return
-    await responder(query, context, _texto_stock(p), kb.teclado_stock_ajuste(p.id))
+    await responder(query, context, _texto_stock(p, i), kb.teclado_stock_ajuste(p.id, i))
 
 async def stock_ajuste(query, context, data, user_id):
+    i = await idioma(context, query.from_user)
     parts = data.split("_")
     try:
         produto_id = sanitizar_id(parts[-2], campo="produto_id")
         delta = sanitizar_delta_stock(parts[-1])
         p = await services.ajustar_stock_admin_async(produto_id, delta, user_id)
     except (EntradaInvalida, ValueError, Produto.DoesNotExist):
-        await responder(query, context, "❌ Erro ao ajustar stock.", kb.teclado_voltar_admin())
+        await responder(query, context, tr(i, "❌ Erro ao ajustar stock."), kb.teclado_voltar_admin(i))
         return
-    await query.answer(f"Stock atualizado: {p.stock_atual} unidades.", show_alert=False)
-    await responder(query, context, _texto_stock(p), kb.teclado_stock_ajuste(p.id))
+    await query.answer(tr(i, "Stock atualizado: {stock} unidades.").format(stock=p.stock_atual), show_alert=False)
+    await responder(query, context, _texto_stock(p, i), kb.teclado_stock_ajuste(p.id, i))
 
 
 # ── Encomendas ─────────────────────────────────────────────────────────────
@@ -128,11 +135,12 @@ async def encomendas(query, context, data, user_id):
                  "📋 Sem encomendas activas de momento.")
 
 async def encomenda_detalhe(query, context, data, user_id):
+    i = await idioma(context, query.from_user)
     try:
         eid = sanitizar_id(data.split("_")[-1], campo="encomenda_id")
         encomenda = await services.get_encomenda_detalhe(eid)
     except (EntradaInvalida, Encomenda.DoesNotExist, ValueError):
-        await responder(query, context, "❌ Encomenda não encontrada.", kb.teclado_voltar_admin())
+        await responder(query, context, tr(i, "❌ Encomenda não encontrada."), kb.teclado_voltar_admin(i))
         return
     emoji = ESTADO_EMOJI.get(encomenda.estado, '📦')
     linhas = await services.get_linhas_encomenda(encomenda)  # what to pack and ship
@@ -142,31 +150,32 @@ async def encomenda_detalhe(query, context, data, user_id):
     )
     await responder(
         query, context,
-        f"📋 *Encomenda #{encomenda.id}*\n\n"
-        f"👤 Cliente: *{md(encomenda.utilizador.nome, '*')}*\n"
-        f"📱 Telegram ID: `{encomenda.utilizador.telegram_id}`\n"
-        f"{emoji} Estado: *{encomenda.estado}*\n"
-        f"📅 Data: {timezone.localtime(encomenda.data_encomenda).strftime('%d/%m/%Y %H:%M')}\n\n"
-        f"{texto_linhas}\n\n"
-        f"💶 Total: *{encomenda.total:.2f}€*",
-        kb.teclado_acoes_encomenda(encomenda)
+        tr(i, "📋 *Encomenda #{id}*\n\n👤 Cliente: *{cliente}*\n📱 Telegram ID: `{telegram_id}`\n"
+              "{emoji} Estado: *{estado}*\n📅 Data: {data}\n\n{linhas}\n\n💶 Total: *{total:.2f}€*").format(
+            id=encomenda.id, cliente=md(encomenda.utilizador.nome, '*'),
+            telegram_id=encomenda.utilizador.telegram_id, emoji=emoji, estado=estado(i, encomenda.estado),
+            data=timezone.localtime(encomenda.data_encomenda).strftime('%d/%m/%Y %H:%M'),
+            linhas=texto_linhas, total=encomenda.total),
+        kb.teclado_acoes_encomenda(encomenda, i)
     )
 
 async def encomenda_pedir_cancelamento(query, context, data, user_id):
     """Ask before cancelling: a paid order is refunded in full, and that can't be undone."""
+    i = await idioma(context, query.from_user)
     try:
         eid = sanitizar_id(data.split("_")[-1], campo="encomenda_id")
         encomenda = await services.get_encomenda_detalhe(eid)
     except (EntradaInvalida, Encomenda.DoesNotExist, ValueError):
-        await responder(query, context, "❌ Encomenda não encontrada.", kb.teclado_voltar_admin())
+        await responder(query, context, tr(i, "❌ Encomenda não encontrada."), kb.teclado_voltar_admin(i))
         return
-    aviso = ("O pagamento é reembolsado na totalidade e o stock volta ao inventário."
-             if encomenda.estado == 'confirmada' else "O stock volta ao inventário.")
+    aviso = (tr(i, "O pagamento é reembolsado na totalidade e o stock volta ao inventário.")
+             if encomenda.estado == 'confirmada' else tr(i, "O stock volta ao inventário."))
     await responder(
         query, context,
-        f"⚠️ Cancelar a encomenda #{encomenda.id} ({encomenda.total:.2f}€)?\n\n{aviso} "
-        "O cliente recebe uma mensagem. Não é possível desfazer.",
-        kb.teclado_confirmar_cancelamento(encomenda.id), parse_mode=None,
+        tr(i, "⚠️ Cancelar a encomenda #{id} ({total:.2f}€)?\n\n{aviso} "
+              "O cliente recebe uma mensagem. Não é possível desfazer.").format(
+            id=encomenda.id, total=encomenda.total, aviso=aviso),
+        kb.teclado_confirmar_cancelamento(encomenda.id, i), parse_mode=None,
     )
 
 async def _mudar_estado_e_notificar(
@@ -175,6 +184,7 @@ async def _mudar_estado_e_notificar(
     label_acao: str
 ):
     await query.answer()  # before the DB update and the customer notification
+    i = await idioma(context, query.from_user)
     mensagem_cliente = novo_estado
     try:
         if novo_estado == 'cancelada':
@@ -189,24 +199,24 @@ async def _mudar_estado_e_notificar(
     except services.PagamentoRecebido:
         await responder(
             query, context,
-            "⚠️ O cliente acabou de pagar esta encomenda, por isso não foi cancelada. "
-            "Aguarda a confirmação do pagamento e cancela de novo para a reembolsar.",
-            kb.teclado_voltar_admin(), parse_mode=None
+            tr(i, "⚠️ O cliente acabou de pagar esta encomenda, por isso não foi cancelada. "
+                  "Aguarda a confirmação do pagamento e cancela de novo para a reembolsar."),
+            kb.teclado_voltar_admin(i), parse_mode=None
         )
         return
     except stripe.error.StripeError:
         logger.exception("Stripe falhou ao cancelar a encomenda #%s", encomenda_id)
         await responder(
             query, context,
-            "❌ Não foi possível contactar a Stripe. A encomenda não foi alterada. Tenta novamente.",
-            kb.teclado_voltar_admin(), parse_mode=None
+            tr(i, "❌ Não foi possível contactar a Stripe. A encomenda não foi alterada. Tenta novamente."),
+            kb.teclado_voltar_admin(i), parse_mode=None
         )
         return
     except (Encomenda.DoesNotExist, ValueError):
         await responder(
             query, context,
-            "❌ Encomenda não encontrada ou estado inválido.",
-            kb.teclado_voltar_admin(), parse_mode=None
+            tr(i, "❌ Encomenda não encontrada ou estado inválido."),
+            kb.teclado_voltar_admin(i), parse_mode=None
         )
         return
 
@@ -218,16 +228,16 @@ async def _mudar_estado_e_notificar(
         f"#{encomenda.id} -> {novo_estado} | notificado={notificada}"
     )
     emoji = ESTADO_EMOJI.get(novo_estado, '📦')
-    extra = ("\n\n⚠️ _A notificação ainda não chegou ao cliente. É reenviada automaticamente durante 24 h; "
-             "se falhar de vez, fica no registo de auditoria._") if not notificada else ""
+    extra = tr(i, "\n\n⚠️ _A notificação ainda não chegou ao cliente. É reenviada automaticamente durante 24 h; "
+                  "se falhar de vez, fica no registo de auditoria._") if not notificada else ""
     await responder(
         query, context,
-        f"{emoji} *Encomenda #{encomenda.id}* marcada como *{novo_estado}*."
-        f"\n👤 Cliente: {md(encomenda.utilizador.nome)}"
-        f"\n💶 Total: {encomenda.total:.2f}€"
-        f"\n📩 Notificação enviada: {'✅ sim' if notificada else '⏳ em fila'}"
+        tr(i, "{emoji} *Encomenda #{id}* marcada como *{estado}*.\n👤 Cliente: {cliente}\n💶 Total: {total:.2f}€"
+              "\n📩 Notificação enviada: {enviada}").format(
+            emoji=emoji, id=encomenda.id, estado=estado(i, novo_estado), cliente=md(encomenda.utilizador.nome),
+            total=encomenda.total, enviada=tr(i, "✅ sim") if notificada else tr(i, "⏳ em fila"))
         + extra,
-        kb.teclado_voltar_encomendas_admin()
+        kb.teclado_voltar_encomendas_admin(i)
     )
 
 def _mudar_estado(novo_estado: str, label_acao: str):
@@ -236,7 +246,7 @@ def _mudar_estado(novo_estado: str, label_acao: str):
         try:
             eid = sanitizar_id(data.split("_")[-1], campo="encomenda_id")
         except EntradaInvalida:
-            await query.answer("❌ ID inválido.", show_alert=True)
+            await query.answer(tr(await idioma(context, query.from_user), "❌ ID inválido."), show_alert=True)
             return
         await _mudar_estado_e_notificar(query, context, user_id, eid, novo_estado, label_acao)
     return handler
@@ -251,35 +261,35 @@ async def utilizadores(query, context, data, user_id):
                  "👥 Sem utilizadores registados.")
 
 async def utilizador_toggle(query, context, data, user_id):
+    i = await idioma(context, query.from_user)
     tid = data[len("admin_utilizador_"):]
     # Blocking yourself would lock you out, and blocking an admin silently removes their rights.
     if tid == str(user_id) or (tid.isdecimal() and await services.e_admin(tid)):
         await responder(
             query, context,
-            "⚠️ Não é possível bloquear um administrador (nem a ti próprio) a partir do Telegram. "
-            "Retira primeiro os direitos de administrador no Django admin.",
-            kb.teclado_voltar_utilizadores(), parse_mode=None,
+            tr(i, "⚠️ Não é possível bloquear um administrador (nem a ti próprio) a partir do Telegram. "
+                  "Retira primeiro os direitos de administrador no Django admin."),
+            kb.teclado_voltar_utilizadores(i), parse_mode=None,
         )
         return
     try:
         u, novo_ativo = await services.alternar_utilizador_ativo_async(tid, user_id)
     except Utilizador.DoesNotExist:
-        await responder(query, context, "❌ Utilizador não encontrado.", kb.teclado_voltar_admin())
+        await responder(query, context, tr(i, "❌ Utilizador não encontrado."), kb.teclado_voltar_admin(i))
         return
-    estado_label = "✅ desbloqueado" if novo_ativo else "🚫 bloqueado"
-    await responder(
-        query, context,
-        f"👤 {u.nome}\n\nO utilizador foi {estado_label}.",  # plain text: no Markdown, no escaping
-        kb.teclado_voltar_utilizadores(), parse_mode=None
-    )
+    texto = tr(i, "👤 {nome}\n\nO utilizador foi ✅ desbloqueado.") if novo_ativo else \
+        tr(i, "👤 {nome}\n\nO utilizador foi 🚫 bloqueado.")
+    # Plain text: no Markdown, no escaping.
+    await responder(query, context, texto.format(nome=u.nome), kb.teclado_voltar_utilizadores(i), parse_mode=None)
 
 
 # ── Auditoria ──────────────────────────────────────────────────────────────
 
-def _texto_registo(r):
-    """One audit entry: when (shop time), what happened, to whom, and the details."""
+def _texto_registo(r, i="pt"):
+    """One audit entry: when (shop time), what happened, to whom, and the details as stored."""
     quando = timezone.localtime(r.data_hora).strftime('%d/%m/%Y %H:%M')
-    linhas = [f"{quando} · {ROTULO_AUDITORIA.get(r.acao, r.acao)}"]
+    rotulo = tr(i, ROTULO_AUDITORIA[r.acao]) if r.acao in ROTULO_AUDITORIA else r.acao
+    linhas = [f"{quando} · {rotulo}"]
     if r.utilizador_id:
         linhas.append(f"👤 {r.utilizador.nome}")
     if r.descricao:
@@ -289,17 +299,19 @@ def _texto_registo(r):
 
 async def auditoria(query, context, data, user_id):
     """Newest first, 10 per page; admin_auditoria_p_<n> opens page n (0 is the newest)."""
+    i = await idioma(context, query.from_user)
     pagina = _numero_pagina(data, "admin_auditoria_p_")
     registos, ha_mais_antigos = await services.get_registos_auditoria(pagina)
     if not registos:
-        texto = "📜 Sem registos de auditoria." if pagina == 0 else "📜 Não há registos mais antigos."
-        await responder(query, context, texto, kb.teclado_auditoria(0, False), parse_mode=None)
+        texto = tr(i, "📜 Sem registos de auditoria.") if pagina == 0 else tr(i, "📜 Não há registos mais antigos.")
+        await responder(query, context, texto, kb.teclado_auditoria(0, False, i), parse_mode=None)
         return
     # Plain text: names and descriptions need no Markdown escaping.
     await responder(
         query, context,
-        f"📜 Registos de auditoria · página {pagina + 1}\n\n" + "\n\n".join(_texto_registo(r) for r in registos),
-        kb.teclado_auditoria(pagina, ha_mais_antigos), parse_mode=None,
+        tr(i, "📜 Registos de auditoria · página {n}\n\n").format(n=pagina + 1)
+        + "\n\n".join(_texto_registo(r, i) for r in registos),
+        kb.teclado_auditoria(pagina, ha_mais_antigos, i), parse_mode=None,
     )
 
 

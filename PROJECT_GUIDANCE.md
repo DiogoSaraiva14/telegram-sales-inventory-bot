@@ -80,6 +80,13 @@ The design is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellabl
 - **Stage 0 outcome (2026-11-27):** the owner states the code's rights are theirs; `LICENSE` reserves all rights; the demo uses generated placeholder images. Still open: the invoicing clause in the reseller contract and the rest of the Stripe checklist. Details and the decision record: [docs/stage0_checklist.md](docs/stage0_checklist.md).
 - **End-to-end run (G13):** Done on 2026-11-27 (demo database, Stripe test mode, real webhook through the Stripe CLI): a two-product order with a changed quantity was paid with a test card, confirmed by the webhook, and the customer got "Pagamento confirmado"; the admin marked it shipped and delivered (a message for each); an unpaid order was cancelled with its stock returned; stock buttons, product on/off and customer block/unblock worked and were audited; stock matched the paid orders. The rest ran the same day: a price changed while in a cart was flagged, the old confirmation screen was refused and the order was charged the new price; a paid order was cancelled through the admin cancel service and Stripe showed a full refund (succeeded, €69.90), with the stock returned and the refund message sent; an unpaid order left for 60 minutes was cancelled by Stripe's `checkout.session.expired` webhook with its stock returned. Fixes from the run: Django web logging, order lines on the admin order screen, a confirmation before cancelling, no blocking of admins from Telegram, and back buttons.
 
+## Customer language (2026-11-27)
+
+- Every bot user, customer or Telegram admin, sees the bot in Portuguese (pt-PT) or English. `Utilizador.idioma` is filled from Telegram's `language_code` on /start while empty (`pt*` → Portuguese, anything else → English, none → Portuguese) and changed only by the customer's 🌐 button.
+- Order messages are queued in the customer's saved language.
+- Not translated: Django admin, stored data (audit descriptions, product, category and customer names) and the shop's welcome text. Audit action names are translated. Stripe Checkout picks its language from the browser.
+- English texts live in `telegram_bot/traducoes.py`, keyed by the Portuguese text; a test fails if a bot text has no English version.
+
 ## Business rules still open
 
 - None in code. What customers are told about their data (the privacy notice) is each shop's responsibility.

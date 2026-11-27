@@ -6,7 +6,7 @@ Status: guidance for this standalone repository.
 
 This is a standalone repository built from an archive snapshot of the private GitLab course project project-2025-2026-p088. The snapshot observed at GitLab commit 0039014ba96cc7d3a4946babad4e6716e47d3954 had 27 commits; this repository does not preserve that history. main contains the imported project as a single import commit, followed by overhaul work.
 
-The application is a Portuguese-Portugal Telegram sales bot backed by Django and PostgreSQL. It includes a product catalog, stock, orders, Stripe Checkout, Telegram admin callbacks, Django admin, and audit rows.
+The application is a Telegram sales bot (Portuguese or English per user; Django admin in Portuguese) backed by Django and PostgreSQL. It includes a product catalog, stock, orders, Stripe Checkout, Telegram admin callbacks, Django admin, and audit rows.
 
 ## Before work
 

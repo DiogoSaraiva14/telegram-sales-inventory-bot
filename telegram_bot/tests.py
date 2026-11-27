@@ -22,6 +22,18 @@ from telegram_bot.handlers.callbacks import encontrar_rota
 UNROUTED_PREFIXES = {"cancelar_encomenda_"}
 
 
+_sem_idioma_guardado = patch("core.services.idioma_guardado", AsyncMock(return_value=""))
+
+
+def setUpModule():
+    # Mock-only suite: no saved language, so screens follow the (mock) Telegram user, i.e. Portuguese.
+    _sem_idioma_guardado.start()
+
+
+def tearDownModule():
+    _sem_idioma_guardado.stop()
+
+
 class StartupConfigTests(SimpleTestCase):
     def test_bot_refuses_to_start_with_missing_settings(self):
         from telegram_bot import app
@@ -456,7 +468,7 @@ class MarkdownEscapingTests(SimpleTestCase):
         from telegram_bot.handlers import commands
         update = MagicMock()
         update.message.reply_text = AsyncMock()
-        utilizador = SimpleNamespace(nome="Ana*_[x](y)")
+        utilizador = SimpleNamespace(nome="Ana*_[x](y)", idioma="")
         loja = SimpleNamespace(nome="Loja", texto_boas_vindas="Olá")
         with patch.object(commands.services, "get_or_create_utilizador", AsyncMock(return_value=(utilizador, False))), \
              patch.object(commands.services, "obter_loja_async", AsyncMock(return_value=loja)), \
@@ -816,7 +828,7 @@ class LojaHandlerTests(SimpleTestCase):
         update.message.reply_text = AsyncMock()
         loja = SimpleNamespace(nome="Loja *Top*", texto_boas_vindas="Promo_de [verão]")
         with patch.object(commands.services, "get_or_create_utilizador",
-                          AsyncMock(return_value=(SimpleNamespace(nome="Ana"), True))), \
+                          AsyncMock(return_value=(SimpleNamespace(nome="Ana", idioma=""), True))), \
              patch.object(commands.services, "obter_loja_async", AsyncMock(return_value=loja)), \
              patch.object(commands.services, "e_admin", AsyncMock(return_value=True)):
             await inspect.unwrap(commands.start)(update, MagicMock())
@@ -1029,3 +1041,90 @@ class TesteAoVivoTests(SimpleTestCase):
         import logging
         self.assertEqual(logging.getLogger("core.views").getEffectiveLevel(), logging.INFO)
         self.assertGreaterEqual(logging.getLogger("httpx").getEffectiveLevel(), logging.WARNING)
+
+
+class LanguageTests(SimpleTestCase):
+    """Customer texts in Portuguese or English; the admin panel stays Portuguese."""
+
+    def test_every_bot_text_has_an_english_version(self):
+        import ast
+        from pathlib import Path
+        from telegram_bot import constants
+        from telegram_bot.traducoes import EN
+        textos = [constants.MENSAGEM_MENU_EXPIRADO, constants.MENSAGEM_ECRA_EXPIRADO, constants.MENSAGEM_PEDIDO_INVALIDO,
+                  constants.MENSAGEM_ENCOMENDA_PENDENTE, constants.MENSAGEM_PRAZO_TERMINADO, constants.MENSAGEM_ALTERADO,
+                  constants.MENSAGEM_CARRINHO_VAZIO, constants.MENSAGEM_REPETIDA, constants.MENSAGEM_REPETIDA_REDUZIDOS,
+                  constants.MENSAGEM_REPETIDA_IGNORADOS, constants.MENSAGEM_FALHA_REGISTO, constants.MENSAGEM_JA_REGISTADA,
+                  constants.MENSAGEM_PAGAMENTO_A_CONFIRMAR, *constants.ROTULO_ALTERACAO.values(),
+                  *constants.RESULTADO_CARRINHO.values(), *constants.MENSAGENS_NOTIFICACAO.values(),
+                  *constants.ROTULO_AUDITORIA.values()]
+        raiz = Path(__file__).resolve().parent.parent
+        for ficheiro in ("telegram_bot/handlers/customer.py", "telegram_bot/handlers/admin.py",
+                         "telegram_bot/handlers/commands.py",
+                         "telegram_bot/handlers/callbacks.py", "telegram_bot/keyboards.py",
+                         "telegram_bot/guards.py", "security/decorators.py"):
+            for no in ast.walk(ast.parse((raiz / ficheiro).read_text(encoding="utf-8"))):
+                if isinstance(no, ast.Call) and getattr(no.func, "id", None) in ("tr", "_botao") and len(no.args) > 1:
+                    arg = no.args[1]  # a literal, or a choice between two (not a dict key like ROTULO["preco"])
+                    for valor in (arg.body, arg.orelse) if isinstance(arg, ast.IfExp) else (arg,):
+                        if isinstance(valor, ast.Constant) and isinstance(valor.value, str):
+                            textos.append(valor.value)
+                if isinstance(no, ast.Call) and getattr(no.func, "id", None) == "_lista":  # title, legend, empty
+                    textos += [a.value for a in no.args[6:9]]
+                if isinstance(no, ast.Assign) and getattr(no.targets[0], "id", None) in ("adicionar_label", "toggle_label"):
+                    textos += [no.value.body.value, no.value.orelse.value]
+        self.assertGreater(len(textos), 170)
+        self.assertEqual([t for t in textos if t not in EN], [])
+
+    def test_language_comes_from_the_telegram_code(self):
+        from telegram_bot.traducoes import idioma_de_codigo
+        for codigo, esperado in (("pt-br", "pt"), ("pt", "pt"), ("en", "en"), ("de", "en"), (None, "pt"), ("", "pt")):
+            self.assertEqual(idioma_de_codigo(codigo), esperado, codigo)
+
+    def test_main_menu_offers_the_other_language(self):
+        pt = [b.callback_data for linha in keyboards.teclado_menu_principal(False).inline_keyboard for b in linha]
+        en = keyboards.teclado_menu_principal(True, "en").inline_keyboard
+        self.assertIn("idioma_en", pt)
+        self.assertEqual([b.text for linha in en for b in linha],
+                         ["🛍️ Catalogue", "🛒 Cart", "📦 My Orders", "ℹ️ Help", "🌐 Português", "🔐 Admin Panel"])
+        for data in ("idioma_pt", "idioma_en"):
+            self.assertEqual(validar_callback(data), data)
+            self.assertIs(encontrar_rota(data)[0], customer.mudar_idioma)
+
+    async def test_switching_saves_the_choice_and_redraws_the_menu(self):
+        query, context = MagicMock(), MagicMock(user_data={})
+        query.from_user.id = 7
+        responder = AsyncMock()
+        with patch.object(customer.services, "definir_idioma", AsyncMock()) as definir, \
+             patch.object(customer.services, "e_admin", AsyncMock(return_value=False)), \
+             patch.object(customer, "responder", responder):
+            await customer.mudar_idioma(query, context, "idioma_en", 7)
+        definir.assert_awaited_once_with(7, "en")
+        self.assertEqual(context.user_data["idioma"], "en")
+        self.assertEqual(responder.await_args.args[2], "What would you like to do?")
+
+    async def test_cached_language_needs_no_database(self):
+        from telegram_bot.ui import idioma
+        context = MagicMock(user_data={"idioma": "en"})
+        with patch("core.services.idioma_guardado", AsyncMock()) as guardado:
+            self.assertEqual(await idioma(context, SimpleNamespace(id=1, language_code="pt")), "en")
+        guardado.assert_not_awaited()
+
+    def test_english_cart_and_order_texts(self):
+        linha = SimpleNamespace(indisponivel=False, stock_insuficiente=True, stock=2, preco_alterado=False,
+                                quantidade=3, nome="SSD", subtotal=Decimal("150.00"))
+        self.assertEqual(customer._texto_carrinho([linha], Decimal("150.00"), i="en"),
+                         "🛒 Cart\n\n• 3× SSD — 150.00€ ⚠️ only 2 in stock\n\nTotal: 150.00€")
+        from telegram_bot.traducoes import estado
+        self.assertEqual((estado("en", "enviada"), estado("pt", "enviada")), ("shipped", "enviada"))
+
+    def test_admin_panel_in_english(self):
+        menu = [b.text for linha in keyboards.teclado_admin_menu("en").inline_keyboard for b in linha]
+        self.assertEqual(menu, ["📦 Products", "📊 Stock", "📋 Orders", "👥 Users", "📜 Audit log", "🔙 Main Menu"])
+        enc = SimpleNamespace(id=3, estado="confirmada")
+        self.assertEqual([b.text for linha in keyboards.teclado_acoes_encomenda(enc, "en").inline_keyboard for b in linha],
+                         ["🚚 Mark shipped", "❌ Cancel", "🔙 Order list"])
+        from django.utils import timezone
+        registo = SimpleNamespace(data_hora=timezone.now(),
+                                  acao="AJUSTE_STOCK", utilizador_id=None, descricao="SSD: +5")
+        self.assertIn("📊 Stock adjustment\nSSD: +5", admin._texto_registo(registo, "en"))

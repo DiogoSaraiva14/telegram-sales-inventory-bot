@@ -27,6 +27,7 @@ ALLOWED_EXACT = {
     "menu_inicio", "menu_catalogo", "menu_encomendas", "menu_ajuda",
     "sem_stock",
     "carrinho_ver", "carrinho_finalizar",
+    "idioma_pt", "idioma_en",
     "admin_menu", "admin_produtos", "admin_stock",
     "admin_encomendas", "admin_utilizadores", "admin_auditoria",
 }
