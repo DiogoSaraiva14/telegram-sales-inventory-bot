@@ -2,7 +2,7 @@
 
 A Telegram shop with a multi-product cart, stock control and Stripe Checkout payments, run from Django and PostgreSQL. Customers browse, fill a cart and pay inside Telegram; admins ship, cancel, refund and adjust stock from a Telegram admin panel; the shop owner manages the catalogue in Django admin. Each copy serves one shop and is configured without code changes.
 
-The bot speaks European Portuguese or English to each user, customers and Telegram admins alike: it follows their Telegram language and has a 🌐 button to switch. Django admin is in Portuguese. It is a portfolio project: it has run end to end in Stripe test mode, but no copy has been deployed for a real shop (see [Status](#status)).
+The bot speaks European Portuguese or English to each user, customers and Telegram admins alike: it follows their Telegram language and has a 🌐 button to switch. Django admin is in Portuguese. It has run end to end in Stripe test mode and is ready for a first shop; no copy has been deployed for a real shop yet (see [Status](#status)). Shops and resellers can [get a licensed copy](#get-a-copy-for-your-shop).
 
 ## Screenshots
 
@@ -75,8 +75,20 @@ More detail: [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY.md](SECURITY.md) (fin
 - **Tests:** 244 automated tests, run by CI on every pull request with PostgreSQL 17, plus a migration drift check.
   - `core/tests.py` (150, PostgreSQL): order creation from snapshots, the payment window and session recovery, the webhook, cancellation and refunds, the cleanup, the notification queue, the state machine, admin actions and permissions, personal-data rules, the saved language, and threaded tests that prove the row locks and the absence of deadlocks.
   - `telegram_bot/tests.py` (94, mocks only): routing and the callback allowlist, the admin gate, every screen's buttons, log privacy, and an English version for every bot text.
-- **Live run (2026-11-27):** on a demo database with Stripe in test mode and its real webhook, a two-product order was paid, confirmed, shipped and delivered with a customer message at each step; unpaid orders were cancelled with stock returned; stock, product and customer actions were audited. A price change in a cart, the full refund of a paid order and the 60-minute expiry also passed.
+- **Live run (2026-11-27):** on a demo database with Stripe in test mode and its real webhook, a two-product order was paid, confirmed, shipped and delivered with a customer message at each step; unpaid orders were cancelled with stock returned; stock, product and customer actions were audited. A price change in a cart, the full refund of a paid order and the 60-minute expiry also passed. Later the same day: the whole customer and admin flow in English, switching back to Portuguese, and the shop's welcome image on `/start`.
 - **Not done:** no copy is deployed. Run the [Stripe test-mode checklist](DEPLOYMENT.md#10-stripe-test-mode-checklist) again on each new copy before switching to live keys.
+
+## Get a copy for your shop
+
+The code is public to read, not to use: running it for a shop needs a written licence from the author (see [Licence](#licence-and-origin)). A licence covers:
+
+- **One copy per shop:** its own bot, database and Stripe account, so shops never share data.
+- **Setup:** installation on the shop's server (or the reseller's), HTTPS, backups, the shop name, welcome text and image, and the handover described in [DEPLOYMENT.md](DEPLOYMENT.md).
+- **Maintenance:** bug and security fixes, and dependency updates, for an agreed period.
+
+The bot takes payments through the shop's own Stripe account. It doesn't issue invoices or calculate tax or shipping; each shop handles those and its own legal texts.
+
+To ask about a licence, a demo or a reseller agreement, contact the author through their [GitHub profile](https://github.com/DiogoSaraiva14).
 
 ## Quick start (demo)
 
