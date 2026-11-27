@@ -561,7 +561,7 @@ class AdminStatusHandlerTests(SimpleTestCase):
         from security.sanitization import EntradaInvalida
         botoes = _botoes(keyboards.teclado_acoes_encomenda(SimpleNamespace(id=5, estado="pendente")))
         self.assertNotIn("admin_enc_confirmar_5", [dados for _, dados in botoes])
-        self.assertIn("admin_enc_cancelar_5", [dados for _, dados in botoes])
+        self.assertIn("admin_enc_pedir_cancelar_5", [dados for _, dados in botoes])  # cancelling asks first
         with self.assertRaises(EntradaInvalida):
             validar_callback("admin_enc_confirmar_5")
 
@@ -612,6 +612,7 @@ class AdminUserToggleTests(SimpleTestCase):
         responder = AsyncMock()
         utilizador = SimpleNamespace(nome="Ana *Silva*_x")
         with patch.object(admin.services, "alternar_utilizador_ativo_async", AsyncMock(return_value=(utilizador, False))), \
+             patch.object(admin.services, "e_admin", AsyncMock(return_value=False)), \
              patch.object(admin, "responder", responder):
             await admin.utilizador_toggle(MagicMock(), MagicMock(), "admin_utilizador_123", 1)
         texto = responder.await_args.args[2]
@@ -975,3 +976,56 @@ class ListasAdminPaginadasTests(SimpleTestCase):
         _, prefixo, handler, servico = self.LISTAS[2]
         _, texto, botoes = await self._abrir(handler, servico, "admin_encomendas", {})
         self.assertEqual((texto, botoes), ("📋 Sem encomendas activas de momento.", [("🔙 Painel Admin", "admin_menu")]))
+
+
+class TesteAoVivoTests(SimpleTestCase):
+    """Fixes from the 2026-11-27 live run: order lines, cancel confirmation, no admin lockout, logging."""
+
+    async def test_order_screen_lists_what_to_ship_and_has_a_way_back(self):
+        from datetime import datetime, timezone as tz
+        encomenda = SimpleNamespace(id=4, estado="confirmada", total=Decimal("169.88"),
+                                    data_encomenda=datetime(2026, 7, 1, 12, 0, tzinfo=tz.utc),
+                                    utilizador=SimpleNamespace(nome="Ana", telegram_id="7"))
+        linhas = [SimpleNamespace(quantidade=2, nome_produto="RAM 16GB", produto=None, preco_unitario=Decimal("49.99"))]
+        responder = AsyncMock()
+        with patch.object(admin.services, "get_encomenda_detalhe", AsyncMock(return_value=encomenda)), \
+             patch.object(admin.services, "get_linhas_encomenda", AsyncMock(return_value=linhas)), \
+             patch.object(admin, "responder", responder):
+            await admin.encomenda_detalhe(MagicMock(), MagicMock(), "admin_ver_encomenda_4", 1)
+        texto, teclado = responder.await_args.args[2], responder.await_args.args[3]
+        self.assertIn("• 2× RAM 16GB — 99.98€", texto)
+        self.assertIn("01/07/2026 13:00", texto)  # shop time: Europe/Lisbon is UTC+1 in July
+        self.assertEqual(_botoes(teclado)[-1], ("🔙 Lista de Encomendas", "admin_encomendas"))
+
+    async def test_cancelling_a_paid_order_asks_first_and_mentions_the_refund(self):
+        encomenda = SimpleNamespace(id=4, estado="confirmada", total=Decimal("169.88"))
+        responder = AsyncMock()
+        with patch.object(admin.services, "get_encomenda_detalhe", AsyncMock(return_value=encomenda)), \
+             patch.object(admin.services, "cancelar_encomenda_db", AsyncMock()) as cancelar, \
+             patch.object(admin, "responder", responder):
+            await admin.encomenda_pedir_cancelamento(MagicMock(), MagicMock(), "admin_enc_pedir_cancelar_4", 1)
+        cancelar.assert_not_awaited()
+        self.assertIn("reembolsado na totalidade", responder.await_args.args[2])
+        self.assertEqual(_botoes(responder.await_args.args[3]),
+                         [("✅ Sim, cancelar", "admin_enc_cancelar_4"), ("🔙 Não, voltar", "admin_ver_encomenda_4")])
+        self.assertEqual(encontrar_rota("admin_enc_pedir_cancelar_4"), (admin.encomenda_pedir_cancelamento, True))
+        self.assertEqual(validar_callback("admin_enc_pedir_cancelar_4"), "admin_enc_pedir_cancelar_4")
+
+    async def test_an_admin_cannot_block_themselves_or_another_admin(self):
+        for alvo, e_admin in (("1", False), ("55", True)):
+            responder, alternar = AsyncMock(), AsyncMock()
+            with patch.object(admin.services, "e_admin", AsyncMock(return_value=e_admin)), \
+                 patch.object(admin.services, "alternar_utilizador_ativo_async", alternar), \
+                 patch.object(admin, "responder", responder):
+                await admin.utilizador_toggle(MagicMock(), MagicMock(), f"admin_utilizador_{alvo}", 1)
+            alternar.assert_not_awaited()
+            self.assertIn("Não é possível bloquear um administrador", responder.await_args.args[2])
+
+    def test_customer_list_shows_a_missing_username_plainly(self):
+        teclado = keyboards.teclado_utilizadores_admin([SimpleNamespace(ativo=True, nome="Ana", username=None, telegram_id="7")])
+        self.assertEqual(_botoes(teclado)[0][0], "✅ Ana (sem username)")
+
+    def test_web_process_logs_the_app_at_info_but_never_httpx_urls(self):
+        import logging
+        self.assertEqual(logging.getLogger("core.views").getEffectiveLevel(), logging.INFO)
+        self.assertGreaterEqual(logging.getLogger("httpx").getEffectiveLevel(), logging.WARNING)

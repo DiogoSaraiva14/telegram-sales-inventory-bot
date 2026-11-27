@@ -54,6 +54,7 @@ ALLOWED_PREFIXES = (
     "admin_enc_enviada_",
     "admin_enc_entregue_",
     "admin_enc_cancelar_",
+    "admin_enc_pedir_cancelar_",
     "admin_utilizador_",
     "admin_auditoria_p_",
     "admin_produtos_p_",

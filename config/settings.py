@@ -130,3 +130,19 @@ STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET')
 STRIPE_SUCCESS_URL = os.getenv('STRIPE_SUCCESS_URL')
 STRIPE_CANCEL_URL = os.getenv('STRIPE_CANCEL_URL')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+
+# Logging for the Django web process and management commands (the bot sets its own in telegram_bot/app.py).
+# The app's own loggers go to the console at INFO, which the service manager or the cron redirect keeps.
+# httpx stays at WARNING: its INFO lines contain request URLs, and Telegram URLs contain the bot token.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {'simples': {'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s'}},
+    'handlers': {'consola': {'class': 'logging.StreamHandler', 'formatter': 'simples'}},
+    'root': {'handlers': ['consola'], 'level': 'WARNING'},
+    'loggers': {
+        'core': {'level': 'INFO'},
+        'security': {'level': 'INFO'},
+        'httpx': {'level': 'WARNING'},
+    },
+}
