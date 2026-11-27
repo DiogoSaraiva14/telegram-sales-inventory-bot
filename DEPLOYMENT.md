@@ -23,7 +23,7 @@ Nothing is shared between shops, so one shop's data can't reach another.
 | Process | Command | Notes |
 | --- | --- | --- |
 | Bot | `python bot.py` | Long polling. Run exactly one per bot token (Telegram refuses a second one). Keep it running with a service manager such as systemd. |
-| Django web | a WSGI server serving `config.wsgi` | Serves the Django admin at `/admin/` and the Stripe webhook at `/webhook/stripe/`. It must be reachable over HTTPS. The project pins no WSGI server; choose one for the host. |
+| Django web | a WSGI server serving `config.wsgi` | Serves the Django admin at `/admin/` and the Stripe webhook at `/webhook/stripe/`. It must be reachable over HTTPS. The project pins no WSGI server; choose one for the host. It logs to the console (the app at INFO, everything else at WARNING); keep that output, for example in the service manager's journal. |
 | Cleanup | cron, every 5 minutes | See "Scheduled cleanup". |
 
 The webhook runs in the Django web process, so payments are still confirmed while the bot is stopped.
@@ -143,7 +143,7 @@ Each shop is the controller of its customers' data and writes its own privacy no
 | Cart | `Carrinho` | deleted 30 days after the last change |
 | Confirmation screens without an order | `ConfirmacaoCarrinho` | deleted after 45 minutes |
 | Orders, order lines, payments, the screens they came from | `Encomenda`, `LinhaEncomenda`, `Pagamento`, `ConfirmacaoCarrinho` | kept: each shop sets its own period from its invoicing and tax duties |
-| Audit log | `RegistoAuditoria` | kept, as above. Descriptions name customers only by internal id ("Cliente #12"); the row links to the customer, so the name shows only while it exists |
+| Audit log | `RegistoAuditoria` | kept, as above. Descriptions name customers only by internal id ("Cliente #12"). Order and payment rows link to the customer; product, stock and block rows link to the Telegram admin who acted |
 | Customer messages (Telegram chat id, order number, total) | `Notificacao` | deleted 30 days after being sent or given up |
 | Bot log | `logs/bot.log` | 14 daily files. Customers appear only as a keyed pseudonym (SEC-08) |
 | Database backups | the shop's backup location | as long as the shop keeps them; an anonymised customer stays in older backups |

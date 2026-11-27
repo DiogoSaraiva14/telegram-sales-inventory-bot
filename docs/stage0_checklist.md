@@ -1,6 +1,6 @@
 # Stage 0: rights, licence and images
 
-**Status:** open. Prepared on 2026-11-25 from the files on this computer. The answers are the author's to obtain and record below.
+**Status:** open (items 2–3). Prepared on 2026-11-25 from the files on this computer; item 1 answered by the owner on 2026-11-27.
 
 Stage 0 comes before selling the package (see [the cart design](designs/cart_resellable_shop.md#stage-0-prerequisites-no-code)). If an item marked "blocks" fails, the reseller goal stops and the project stays a portfolio demo.
 
@@ -10,11 +10,11 @@ Stage 0 comes before selling the package (see [the cart design](designs/cart_res
 
 | # | Item | Blocks | What the files show | Still needed | Status |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Code ownership and course rights | Yes | All 27 commits in the original repository are by Jose Diogo Pereira Saraiva (2026-05-03 to 2026-06-23). It was hosted on the school's GitLab, in a course group. There's no licence file. | A written answer from the course on whether you may sell or license the code | Open |
+| 1 | Code ownership and course rights | Yes | All 27 commits in the original repository are by Jose Diogo Pereira Saraiva (2026-05-03 to 2026-06-23). It was hosted on the school's GitLab, in a course group. There's no licence file. | None: the owner states the rights are theirs (2026-11-27) | Answered |
 | 2 | Licence for the reseller | Yes | No licence in either repository. Dependencies: mostly permissive, three LGPL-3.0, one MPL-2.0. | Choose the licence model; add third-party notices | Open |
 | 3 | Demo images | Yes | 27 images in the original project, none in this repository: 26 branded product photos and one anime wallpaper | Replace them with your own, licensed or placeholder images | Open; replacing is recommended |
 | 4 | Invoicing position | No | The bot issues no invoices or tax documents | A clause in the reseller contract (draft below) | Open |
-| 5 | Stripe test run | No | A partial Telegram test on 2026-11-25: catalogue and cart worked, and the rate limit was fixed. Payment hasn't run yet. | Run the `DEPLOYMENT.md` checklist | Open |
+| 5 | Stripe test run | No | Paid order, shipping, delivery and an unpaid cancellation ran on 2026-11-27 (section 5) | Price change, paid-order refund, 60-minute expiry | Partly done |
 
 ## 1. Code ownership and course rights
 
@@ -76,7 +76,7 @@ The bot doesn't issue invoices, receipts or tax documents. Draft clauses for the
 
 ## 5. Stripe test run
 
-Run the "Stripe test-mode checklist" in [DEPLOYMENT.md](../DEPLOYMENT.md) on the demo database. The run on 2026-11-25 stopped before payment: the Stripe CLI on this computer needs `stripe login` before the webhook can be forwarded. Record the results here and in `PROJECT_GUIDANCE.md`.
+Run the "Stripe test-mode checklist" in [DEPLOYMENT.md](../DEPLOYMENT.md) on the demo database. Partly done on 2026-11-27 (demo database, Stripe test mode, real webhook through the Stripe CLI): a two-product order with a changed quantity was paid with a test card, confirmed by the webhook, and the customer got "Pagamento confirmado"; the admin marked it shipped and delivered (a message for each); an unpaid order was cancelled with its stock returned; stock buttons, product on/off and customer block/unblock worked and were audited; stock matched the paid orders. Not yet run: a price change in a cart, cancelling a paid order (refund), and the 60-minute expiry.
 
 ## Decision record
 
@@ -84,10 +84,10 @@ Fill in one row per answer. The design treats Stage 0 as passed only when items 
 
 | Date | Item | Answer | Who answered | Evidence (where it's kept) |
 | --- | --- | --- | --- | --- |
-| | 1. Course rights | | | |
+| 2026-11-27 | 1. Course rights | Not a research project; the code's rights are the owner's | The owner, in the working session | The owner's statement (no written course answer kept) |
 | | 1. Other contributors or templates | | | |
 | | 2. Licence model | | | |
 | | 2. Notices added | | | |
 | | 3. Images replaced | | | |
 | | 4. Invoicing clause in contract | | | |
-| | 5. Stripe test run | | | |
+| 2026-11-27 | 5. Stripe test run | Partly done; see section 5 | The owner, with Claude Code | `PROJECT_GUIDANCE.md`, this file |

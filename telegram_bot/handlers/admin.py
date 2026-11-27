@@ -135,15 +135,38 @@ async def encomenda_detalhe(query, context, data, user_id):
         await responder(query, context, "❌ Encomenda não encontrada.", kb.teclado_voltar_admin())
         return
     emoji = ESTADO_EMOJI.get(encomenda.estado, '📦')
+    linhas = await services.get_linhas_encomenda(encomenda)  # what to pack and ship
+    texto_linhas = "\n".join(
+        f"• {l.quantidade}× {md(l.nome_produto or l.produto.nome)} — {l.preco_unitario * l.quantidade:.2f}€"
+        for l in linhas
+    )
     await responder(
         query, context,
         f"📋 *Encomenda #{encomenda.id}*\n\n"
         f"👤 Cliente: *{md(encomenda.utilizador.nome, '*')}*\n"
         f"📱 Telegram ID: `{encomenda.utilizador.telegram_id}`\n"
         f"{emoji} Estado: *{encomenda.estado}*\n"
-        f"💶 Total: *{encomenda.total:.2f}€*\n"
-        f"📅 Data: {encomenda.data_encomenda.strftime('%d/%m/%Y %H:%M')}",
+        f"📅 Data: {timezone.localtime(encomenda.data_encomenda).strftime('%d/%m/%Y %H:%M')}\n\n"
+        f"{texto_linhas}\n\n"
+        f"💶 Total: *{encomenda.total:.2f}€*",
         kb.teclado_acoes_encomenda(encomenda)
+    )
+
+async def encomenda_pedir_cancelamento(query, context, data, user_id):
+    """Ask before cancelling: a paid order is refunded in full, and that can't be undone."""
+    try:
+        eid = sanitizar_id(data.split("_")[-1], campo="encomenda_id")
+        encomenda = await services.get_encomenda_detalhe(eid)
+    except (EntradaInvalida, Encomenda.DoesNotExist, ValueError):
+        await responder(query, context, "❌ Encomenda não encontrada.", kb.teclado_voltar_admin())
+        return
+    aviso = ("O pagamento é reembolsado na totalidade e o stock volta ao inventário."
+             if encomenda.estado == 'confirmada' else "O stock volta ao inventário.")
+    await responder(
+        query, context,
+        f"⚠️ Cancelar a encomenda #{encomenda.id} ({encomenda.total:.2f}€)?\n\n{aviso} "
+        "O cliente recebe uma mensagem. Não é possível desfazer.",
+        kb.teclado_confirmar_cancelamento(encomenda.id), parse_mode=None,
     )
 
 async def _mudar_estado_e_notificar(
@@ -204,7 +227,7 @@ async def _mudar_estado_e_notificar(
         f"\n💶 Total: {encomenda.total:.2f}€"
         f"\n📩 Notificação enviada: {'✅ sim' if notificada else '⏳ em fila'}"
         + extra,
-        kb.teclado_voltar_admin()
+        kb.teclado_voltar_encomendas_admin()
     )
 
 def _mudar_estado(novo_estado: str, label_acao: str):
@@ -229,6 +252,15 @@ async def utilizadores(query, context, data, user_id):
 
 async def utilizador_toggle(query, context, data, user_id):
     tid = data[len("admin_utilizador_"):]
+    # Blocking yourself would lock you out, and blocking an admin silently removes their rights.
+    if tid == str(user_id) or (tid.isdecimal() and await services.e_admin(tid)):
+        await responder(
+            query, context,
+            "⚠️ Não é possível bloquear um administrador (nem a ti próprio) a partir do Telegram. "
+            "Retira primeiro os direitos de administrador no Django admin.",
+            kb.teclado_voltar_utilizadores(), parse_mode=None,
+        )
+        return
     try:
         u, novo_ativo = await services.alternar_utilizador_ativo_async(tid, user_id)
     except Utilizador.DoesNotExist:
@@ -238,7 +270,7 @@ async def utilizador_toggle(query, context, data, user_id):
     await responder(
         query, context,
         f"👤 {u.nome}\n\nO utilizador foi {estado_label}.",  # plain text: no Markdown, no escaping
-        kb.teclado_voltar_admin(), parse_mode=None
+        kb.teclado_voltar_utilizadores(), parse_mode=None
     )
 
 
@@ -289,6 +321,7 @@ PREFIX_ROUTES = (
     ("admin_enc_enviada_", _mudar_estado('enviada', 'ENVIAR')),
     ("admin_enc_entregue_", _mudar_estado('entregue', 'ENTREGAR')),
     ("admin_enc_cancelar_", _mudar_estado('cancelada', 'CANCELAR')),
+    ("admin_enc_pedir_cancelar_", encomenda_pedir_cancelamento),
     ("admin_utilizador_", utilizador_toggle),
     ("admin_auditoria_p_", auditoria),
     ("admin_produtos_p_", produtos),

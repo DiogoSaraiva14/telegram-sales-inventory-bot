@@ -208,7 +208,7 @@ def teclado_utilizadores_admin(utilizadores, pagina=0, ha_mais=False):
     for u in utilizadores:
         estado = "✅" if u.ativo else "🚫"
         buttons.append([InlineKeyboardButton(
-            f"{estado} {u.nome} (@{u.username or 'sem username'})",
+            f"{estado} {u.nome} " + (f"(@{u.username})" if u.username else "(sem username)"),
             callback_data=f"admin_utilizador_{u.telegram_id}"
         )])
     return _com_paginas(buttons, "admin_utilizadores_p_", pagina, ha_mais)
@@ -226,12 +226,31 @@ def teclado_encomendas_admin(encomendas, pagina=0, ha_mais=False):
 def teclado_acoes_encomenda(encomenda):
     buttons = []
     estado = encomenda.estado
+    cancelar = InlineKeyboardButton("❌ Cancelar", callback_data=f"admin_enc_pedir_cancelar_{encomenda.id}")
     if estado == 'pendente':
-        buttons.append([InlineKeyboardButton("❌ Cancelar",  callback_data=f"admin_enc_cancelar_{encomenda.id}")])
+        buttons.append([cancelar])
     elif estado == 'confirmada':
         buttons.append([InlineKeyboardButton("🚚 Marcar Enviada", callback_data=f"admin_enc_enviada_{encomenda.id}")])
-        buttons.append([InlineKeyboardButton("❌ Cancelar",       callback_data=f"admin_enc_cancelar_{encomenda.id}")])
+        buttons.append([cancelar])
     elif estado == 'enviada':
         buttons.append([InlineKeyboardButton("📬 Marcar Entregue", callback_data=f"admin_enc_entregue_{encomenda.id}")])
-        buttons.append([InlineKeyboardButton("🔙 Lista de Encomendas", callback_data="admin_encomendas")])
+    buttons.append([InlineKeyboardButton("🔙 Lista de Encomendas", callback_data="admin_encomendas")])
     return InlineKeyboardMarkup(buttons)
+
+def teclado_confirmar_cancelamento(encomenda_id):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Sim, cancelar", callback_data=f"admin_enc_cancelar_{encomenda_id}")],
+        [InlineKeyboardButton("🔙 Não, voltar", callback_data=f"admin_ver_encomenda_{encomenda_id}")],
+    ])
+
+def teclado_voltar_encomendas_admin():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Lista de Encomendas", callback_data="admin_encomendas")],
+        [InlineKeyboardButton("🔙 Painel Admin", callback_data="admin_menu")],
+    ])
+
+def teclado_voltar_utilizadores():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👥 Lista de Utilizadores", callback_data="admin_utilizadores")],
+        [InlineKeyboardButton("🔙 Painel Admin", callback_data="admin_menu")],
+    ])
