@@ -210,6 +210,19 @@ async def get_linhas_encomenda(encomenda):
 async def cancelar_encomenda_db(encomenda_id: int, origem: str = 'admin Telegram'):
     return await sync_to_async(cancelar_encomenda)(encomenda_id, origem)
 
+class TransicaoInvalida(Exception):
+    """A service tried a state change that Encomenda.TRANSICOES or Pagamento.TRANSICOES doesn't allow."""
+
+
+def _mudar_estado(objeto, novo):
+    """Set estado / estado_pagamento after checking the model's TRANSICOES; the caller saves."""
+    campo = 'estado' if isinstance(objeto, Encomenda) else 'estado_pagamento'
+    atual = getattr(objeto, campo)
+    if novo not in type(objeto).TRANSICOES[atual]:
+        raise TransicaoInvalida(f"{type(objeto).__name__} #{objeto.pk}: {atual} -> {novo}")
+    setattr(objeto, campo, novo)
+
+
 # Admin status steps (SEC-10, owner decision 2026-11-24): forward only. Orders are confirmed
 # only by the Stripe webhook, and cancelled only by cancelar_encomenda.
 ESTADO_ANTERIOR = {'enviada': 'confirmada', 'entregue': 'enviada'}
@@ -224,7 +237,7 @@ def avancar_estado_encomenda(encomenda_id: int, novo_estado: str, origem: str = 
                      .filter(pk=encomenda_id, estado=anterior).first())
         if encomenda is None:
             return None
-        encomenda.estado = novo_estado
+        _mudar_estado(encomenda, novo_estado)
         encomenda.save(update_fields=['estado', 'data_atualizacao'])
         RegistoAuditoria.objects.create(
             utilizador=encomenda.utilizador, acao=f'ENCOMENDA_{novo_estado.upper()}', entidade='Encomenda',
@@ -746,16 +759,16 @@ def confirmar_pagamento(pagamento_id: int, sessao_id: str):
         pagamento.data_pagamento = timezone.now()
         if encomenda.estado == 'cancelada':  # SEC-06 owner decision: refund in full, keep it cancelled
             _reembolsar(encomenda, pagamento)
-            pagamento.estado_pagamento = 'reembolsado'
+            _mudar_estado(pagamento, 'reembolsado')
             pagamento.save(update_fields=['estado_pagamento', 'data_pagamento'])
             RegistoAuditoria.objects.create(
                 utilizador=encomenda.utilizador, acao='PAGAMENTO_REEMBOLSADO', entidade='Pagamento',
                 descricao=f'Encomenda #{encomenda.id} já cancelada: pagamento reembolsado (session={sessao_id})',
             )
             return 'reembolsada'
-        pagamento.estado_pagamento = 'pago'
+        _mudar_estado(pagamento, 'pago')
         pagamento.save(update_fields=['estado_pagamento', 'data_pagamento'])
-        encomenda.estado = 'confirmada'
+        _mudar_estado(encomenda, 'confirmada')
         encomenda.save(update_fields=['estado', 'data_atualizacao'])
         RegistoAuditoria.objects.create(
             utilizador=encomenda.utilizador, acao='PAGAMENTO_CONFIRMADO', entidade='Pagamento',
@@ -814,7 +827,7 @@ def cancelar_encomenda(encomenda_id: int, origem: str = ''):
             if not pagamento.stripe_session_id:
                 return ('invalida', encomenda)  # paid outside Stripe: no refund path here
             _reembolsar(encomenda, pagamento)
-            pagamento.estado_pagamento = 'reembolsado'
+            _mudar_estado(pagamento, 'reembolsado')
             pagamento.save(update_fields=['estado_pagamento'])
             resultado = 'reembolsada'
         elif pagamento and pagamento.stripe_session_id and pagamento.estado_pagamento in ('pendente', 'falhado'):
@@ -823,10 +836,11 @@ def cancelar_encomenda(encomenda_id: int, origem: str = ''):
                 raise PagamentoRecebido(encomenda.id)
             if estado_sessao == 'open':
                 stripe.checkout.Session.expire(pagamento.stripe_session_id)
-            pagamento.estado_pagamento = 'falhado'
-            pagamento.save(update_fields=['estado_pagamento'])
+            if pagamento.estado_pagamento == 'pendente':  # an already failed payment stays as it is
+                _mudar_estado(pagamento, 'falhado')
+                pagamento.save(update_fields=['estado_pagamento'])
         _devolver_stock(encomenda, f"Cancelamento Encomenda #{encomenda.id}")
-        encomenda.estado = 'cancelada'
+        _mudar_estado(encomenda, 'cancelada')
         encomenda.save(update_fields=['estado', 'data_atualizacao'])
         RegistoAuditoria.objects.create(
             utilizador=encomenda.utilizador, acao='CANCELAR_ENCOMENDA', entidade='Encomenda',
@@ -897,7 +911,7 @@ def cancelar_por_expiracao(pagamento_id: int, sessao_id: str) -> bool:
         pagamento = Pagamento.objects.select_for_update().get(pk=pagamento_id)
         if pagamento.stripe_session_id != sessao_id or pagamento.estado_pagamento != 'pendente':
             return False  # replaced meanwhile, or already paid/failed: nothing to do
-        pagamento.estado_pagamento = 'falhado'
+        _mudar_estado(pagamento, 'falhado')
         pagamento.save(update_fields=['estado_pagamento'])
         RegistoAuditoria.objects.create(
             utilizador=encomenda.utilizador, acao='PAGAMENTO_EXPIRADO', entidade='Pagamento',
@@ -906,7 +920,7 @@ def cancelar_por_expiracao(pagamento_id: int, sessao_id: str) -> bool:
         if encomenda.estado != 'pendente':
             return False  # e.g. already cancelled by an admin, who returned the stock then
         _devolver_stock(encomenda, f"Pagamento expirado — Encomenda #{encomenda.id}")
-        encomenda.estado = 'cancelada'
+        _mudar_estado(encomenda, 'cancelada')
         encomenda.save(update_fields=['estado', 'data_atualizacao'])
         RegistoAuditoria.objects.create(
             utilizador=encomenda.utilizador, acao='CANCELAR_ENCOMENDA_EXPIRADA', entidade='Encomenda',

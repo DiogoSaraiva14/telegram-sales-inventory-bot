@@ -198,6 +198,16 @@ class Encomenda(models.Model):
         ('entregue',   'Entregue'),
         ('cancelada',  'Cancelada'),
     ]
+    # Every allowed change of estado: new orders start "pendente"; "entregue" and "cancelada" are final.
+    # Who makes each one: the Stripe webhook confirms, admins ship and deliver, and
+    # cancelar_encomenda / cancelar_por_expiracao cancel (see core/services.py).
+    TRANSICOES = {
+        'pendente':   {'confirmada', 'cancelada'},
+        'confirmada': {'enviada', 'cancelada'},
+        'enviada':    {'entregue'},
+        'entregue':   set(),
+        'cancelada':  set(),
+    }
 
     utilizador      = models.ForeignKey(
         Utilizador, on_delete=models.PROTECT, related_name='encomendas'
@@ -273,6 +283,14 @@ class Pagamento(models.Model):
         ('falhado',     'Falhado'),
         ('reembolsado', 'Reembolsado'),
     ]
+    # Every allowed change of estado_pagamento. "falhado" can still become "pago" or "reembolsado":
+    # a session that completes after its order was cancelled is refunded (SEC-06).
+    TRANSICOES = {
+        'pendente':    {'pago', 'falhado', 'reembolsado'},
+        'falhado':     {'pago', 'reembolsado'},
+        'pago':        {'reembolsado'},
+        'reembolsado': set(),
+    }
 
     encomenda          = models.OneToOneField(
         Encomenda, on_delete=models.CASCADE, related_name='pagamento'
