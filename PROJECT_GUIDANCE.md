@@ -70,6 +70,11 @@ The design is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellabl
   - confirmation screens without an order are deleted after 45 minutes;
   - carts after 30 days without a change;
   - screens linked to an order are kept.
+- **Personal data (owner decisions, 2026-11-27):**
+  - audit descriptions name a customer only by internal id ("Cliente #12");
+  - sent or given-up customer messages are deleted after 30 days;
+  - orders, payments and the audit log are not deleted automatically: each shop sets its own period from its legal duties (DEPLOYMENT.md says how);
+  - a customer's data is removed on request with the superuser-only "Anonimizar" action in Django admin; their orders stay for the accounts.
 - **Release safety:** migrations only move forward, with a database backup before each one.
 - **Legal:** invoicing, tax, shipping, withdrawal handling and legal texts stay outside the bot and are each shop's responsibility, stated in the reseller contract. Not legal advice; unverified.
 - **Stage 0 outcome:** not done yet. Code ownership and course rights, the licence and the demo-image rights must be checked before the package is sold. The checklist, the facts gathered so far and the decision record are in [docs/stage0_checklist.md](docs/stage0_checklist.md).
@@ -77,9 +82,9 @@ The design is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellabl
 
 ## Business rules still open
 
-- Which customer data is retained beyond the drafts above, for how long, and what customers are told about it (a privacy notice is each shop's responsibility).
+- None in code. What customers are told about their data (the privacy notice) is each shop's responsibility.
 
-Do not silently choose these policies in code.
+Do not silently choose new policies in code.
 
 ## Engineering requirements for a portfolio release
 

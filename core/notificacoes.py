@@ -19,6 +19,7 @@ from telegram_bot.constants import MENSAGENS_NOTIFICACAO
 logger = logging.getLogger(__name__)
 
 JANELA_REENVIO = timedelta(hours=24)  # owner decision (2026-11-25): retry for 24 h, then give up
+RETENCAO = timedelta(days=30)  # owner decision (2026-11-27): sent or given-up messages are deleted after 30 days
 
 ENVIADA, PERMANENTE, TEMPORARIA = 'enviada', 'permanente', 'temporaria'
 
@@ -47,6 +48,13 @@ def reenviar_pendentes() -> tuple:
         elif Notificacao.objects.filter(pk=pk, estado='falhada').exists():
             falhadas += 1
     return enviadas, falhadas
+
+
+def apagar_antigas() -> int:
+    """Delete sent or given-up messages older than 30 days (they hold the customer's chat id); returns how many."""
+    apagadas, _ = Notificacao.objects.filter(
+        estado__in=('enviada', 'falhada'), criada__lt=timezone.now() - RETENCAO).delete()
+    return apagadas
 
 
 def _tentar(pk) -> bool:

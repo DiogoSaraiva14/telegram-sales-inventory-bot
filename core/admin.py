@@ -35,7 +35,7 @@ def _definir_ativo(request, queryset, ativo, acao, descrever):
 
 
 def _descrever_utilizador(u):
-    return f"{u.nome} (telegram_id={u.telegram_id})"
+    return f"Cliente #{u.pk}"  # no name or Telegram id in audit text (owner decision, 2026-11-27)
 
 
 def _descrever_produto(p):
@@ -48,7 +48,7 @@ class UtilizadorAdmin(admin.ModelAdmin):
     list_filter = ['ativo', 'e_admin']
     search_fields = ['nome', 'telegram_id', 'username']
     readonly_fields = ['data_registo']
-    actions = ['bloquear_utilizadores', 'desbloquear_utilizadores']
+    actions = ['bloquear_utilizadores', 'desbloquear_utilizadores', 'anonimizar_utilizadores']
 
     def get_readonly_fields(self, request, obj=None):
         # Only the reseller's superuser grants or removes Telegram admin rights (Stage 4).
@@ -70,6 +70,24 @@ class UtilizadorAdmin(admin.ModelAdmin):
     def desbloquear_utilizadores(self, request, queryset):
         atualizados = _definir_ativo(request, queryset, True, 'DESBLOQUEAR_UTILIZADOR', _descrever_utilizador)
         self.message_user(request, f"{atualizados} utilizador(es) desbloqueado(s).", messages.SUCCESS)
+
+    def has_anonimizar_permission(self, request):
+        # Checked by Django when the action is listed and when it is posted: the reseller's superuser only.
+        return request.user.is_superuser
+
+    @admin.action(description='🗑️ Anonimizar (pedido de remoção de dados)', permissions=['anonimizar'])
+    def anonimizar_utilizadores(self, request, queryset):
+        feitos, recusados = 0, []
+        for utilizador_id in queryset.order_by('pk').values_list('pk', flat=True):
+            try:
+                services.anonimizar_utilizador(utilizador_id, f'Django admin: {request.user}')
+                feitos += 1
+            except services.ClienteComEncomendasAtivas:
+                recusados.append(f"#{utilizador_id}")
+        self.message_user(request, f"{feitos} cliente(s) anonimizado(s).", messages.WARNING)
+        if recusados:
+            self.message_user(request, "Não anonimizados (têm encomendas em curso; termine-as ou cancele-as "
+                              "primeiro): " + ", ".join(recusados), messages.ERROR)
 
 
 @admin.register(Loja)
