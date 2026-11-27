@@ -60,7 +60,7 @@ The plan is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_
 
 ## Phase 2 — Make commerce state reliable
 
-- Define one explicit order/payment state machine.
+- Define one explicit order/payment state machine. (Done: `Encomenda.TRANSICOES` and `Pagamento.TRANSICOES` list every allowed change, and every service sets a state through `services._mudar_estado`, which refuses any other.)
 - Make order creation, stock reservation, order lines, movement records, and checkout persistence transactional or compensating.
 - Use conditional stock updates/locking to prevent concurrent oversell.
 - Release reserved stock when checkout expires or is cancelled according to the agreed policy.

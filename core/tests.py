@@ -2002,3 +2002,34 @@ class BloqueioClienteSemChaveTests(TestCase):
         bloqueios = [q["sql"] for q in consultas.captured_queries if " FOR " in q["sql"]]
         self.assertEqual(len(bloqueios), 2)
         self.assertTrue(all("FOR NO KEY UPDATE" in sql for sql in bloqueios), bloqueios)
+
+
+class MaquinaEstadosTests(TestCase):
+    """Order and payment states change only along Encomenda.TRANSICOES and Pagamento.TRANSICOES."""
+
+    def test_tables_cover_every_state_and_only_known_states(self):
+        for modelo in (Encomenda, Pagamento):
+            estados = {codigo for codigo, _ in modelo.ESTADO_CHOICES}
+            self.assertEqual(set(modelo.TRANSICOES), estados, modelo.__name__)
+            for destinos in modelo.TRANSICOES.values():
+                self.assertLessEqual(destinos, estados, modelo.__name__)
+
+    def test_final_and_backward_changes_are_refused_and_change_nothing(self):
+        recusadas = [(Encomenda(pk=1, estado="entregue"), "cancelada"), (Encomenda(pk=1, estado="cancelada"), "confirmada"),
+                     (Encomenda(pk=1, estado="enviada"), "confirmada"), (Encomenda(pk=1, estado="pendente"), "enviada"),
+                     (Pagamento(pk=1, estado_pagamento="reembolsado"), "pago"),
+                     (Pagamento(pk=1, estado_pagamento="pago"), "falhado")]
+        for objeto, novo in recusadas:
+            antes = objeto.estado if isinstance(objeto, Encomenda) else objeto.estado_pagamento
+            with self.subTest(antes=antes, novo=novo), self.assertRaises(services.TransicaoInvalida):
+                services._mudar_estado(objeto, novo)
+            self.assertEqual(objeto.estado if isinstance(objeto, Encomenda) else objeto.estado_pagamento, antes)
+
+    def test_a_service_refused_by_the_table_rolls_back(self):
+        cliente = Utilizador.objects.create(telegram_id="811", nome="Estados")
+        encomenda = Encomenda.objects.create(utilizador=cliente, estado="confirmada", total=Decimal("5.00"))
+        with patch.dict(Encomenda.TRANSICOES, {"confirmada": set()}), self.assertRaises(services.TransicaoInvalida):
+            services.avancar_estado_encomenda(encomenda.pk, "enviada")
+        encomenda.refresh_from_db()
+        self.assertEqual(encomenda.estado, "confirmada")
+        self.assertFalse(RegistoAuditoria.objects.filter(acao="ENCOMENDA_ENVIADA").exists())
