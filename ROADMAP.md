@@ -31,7 +31,7 @@ The plan is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_
 
 | Stage | What | State |
 | --- | --- | --- |
-| 0 | Code ownership and course rights, licence, demo-image rights, invoicing clause, one Stripe test run | **Open.** It blocks the reseller goal; until it passes, the project stays a portfolio demo |
+| 0 | Code ownership and course rights, licence, demo-image rights, invoicing clause, one Stripe test run | Rights, licence and images settled (2026-11-27). Open: the invoicing clause in the reseller contract and the rest of the Stripe checklist |
 | 1 | Categories in the database (migrations 0009–0011) | Done |
 | 2 | Multi-line orders from saved confirmation screens, 60-minute payment window, reconciling cleanup (0012) | Done |
 | 3 | Cart, "Repetir encomenda", draft retention (0013) | Done |
@@ -94,9 +94,9 @@ The plan is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_
 
 ## Phase 5 — Portfolio release
 
-- Create a polished README, architecture diagram, screenshots or short demo, test results, and a truthful feature list.
-- Replace third-party sample images with licensed assets or synthetic fixtures.
-- Add license/attribution only after ownership is confirmed.
-- Publish only after course/team sharing approval and the user explicitly chooses to make the repository public.
+- Create a polished README, architecture diagram, screenshots or short demo, test results, and a truthful feature list. (Done.)
+- Replace third-party sample images with licensed assets or synthetic fixtures. (Done: `manage.py criar_demo` generates placeholders.)
+- Add license/attribution only after ownership is confirmed. (Done: ownership confirmed by the owner; `LICENSE` reserves all rights; third-party notices added.)
+- Publish only after course/team sharing approval and the user explicitly chooses to make the repository public. (Ready; the repository stays private until the owner changes its visibility.)
 
 **Done when:** a reviewer can understand, run, and assess the project without access to private accounts or real customer data.
