@@ -38,7 +38,8 @@ The plan is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_
 | 4 | Shop settings, Telegram admin flag, "Dono da loja" group, HTTPS settings, DEPLOYMENT.md (0014–0015) | Done |
 | — | End-to-end run in Stripe test mode with a real webhook (G13) | Done (2026-11-27): payment, shipping, delivery, cancellation, refund, price change and the 60-minute expiry |
 | — | Portuguese or English per user, for customers and Telegram admins (0017) | Done (2026-11-27) |
-| — | Customer "cancel my pending order" button, abandoned-cart reminders, a welcome image | Deferred |
+| — | Shop welcome image on `/start`, chosen in Django admin (0018) | Done (2026-11-27) |
+| — | Customer "cancel my pending order" button, abandoned-cart reminders | Deferred |
 
 ## Phase 0 — Confirm scope and ownership
 
