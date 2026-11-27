@@ -2,8 +2,8 @@
 
 *   **Author:** Jose Diogo Pereira Saraiva
 *   **Status:** Proposed
-*   **Date:** 2026-11-24 (revised 2026-11-25 after the five-stage review; see [consolidated_review_report.md](../../consolidated_review_report.md) and [goldfish_review_report.md](../../goldfish_review_report.md))
-*   **Predecessor:** [concepts_brief_cart.md](../../concepts_brief_cart.md) (12 decisions settled), with the Goldfish review in [goldfish_cart_report.md](../../goldfish_cart_report.md).
+*   **Date:** 2026-11-24 (revised 2026-11-25 after the five-stage review)
+*   **Predecessor:** the cart brainstorm (12 decisions settled) and its review. The brainstorm and review reports were removed on 2026-11-27 and remain in the git history.
 
 --------------------------------------------------------------------------------
 
@@ -523,13 +523,13 @@ The outcome is recorded in `PROJECT_GUIDANCE.md`: what was checked, with whom, a
 
 ### From the brainstorm
 
-The source for this group is concepts_brief_cart.md, "Alternatives Weighed" and "Key Decisions".
+The source for this group is the cart brainstorm, "Alternatives Weighed" and "Key Decisions".
 
 #### A1: PC part picker with compatibility checks
 
 *   **Pros**: It sets a PC-parts shop apart from generic Telegram shop bots.
 *   **Cons**: It only matters to PC-parts shops. It needs structured spec data for every product (sockets, RAM type, power draw, form factors), and wrong data produces confident wrong answers.
-*   **Reason for Rejection**: Rejected by author (concepts_brief_cart.md, Key Decisions): it narrows the package to one kind of shop, and the data upkeep falls on every client.
+*   **Reason for Rejection**: Rejected by author (the cart brainstorm, Key Decisions): it narrows the package to one kind of shop, and the data upkeep falls on every client.
 
 #### A2: One deployment serving many shops
 
@@ -538,31 +538,31 @@ The source for this group is concepts_brief_cart.md, "Alternatives Weighed" and 
     *   A shop id on every table and every query, where one missed filter shows one shop's orders to another.
     *   Several bots in one process, which breaks SEC-09's single-process assumption.
     *   Each Stripe webhook has to be routed to the right shop.
-*   **Reason for Rejection**: Rejected by author (concepts_brief_cart.md, Key Decisions): a copy per shop needs none of this and can't leak data between shops.
+*   **Reason for Rejection**: Rejected by author (the cart brainstorm, Key Decisions): a copy per shop needs none of this and can't leak data between shops.
 
 #### A3: Reserve stock when an item is added to the cart
 
 *   **Pros**: An item in the cart is guaranteed at checkout.
 *   **Cons**: It needs a timer to release idle reservations, and it lets any customer block stock just by browsing.
-*   **Reason for Rejection**: Rejected by author (concepts_brief_cart.md, Key Decisions): stock is taken at Confirm, as today.
+*   **Reason for Rejection**: Rejected by author (the cart brainstorm, Key Decisions): stock is taken at Confirm, as today.
 
 #### A4: Use a pending order (`estado='carrinho'`) as the cart
 
 *   **Pros**: No new tables.
 *   **Cons**: Cart rows would show up in the cleanup, the admin order screens and actions, and every SEC lock path, each of which would need a filter.
-*   **Reason for Rejection**: Rejected by the Goldfish brainstorm review (goldfish_cart_report.md, §4), and kept by the author: separate cart tables keep orders meaning "something the customer confirmed".
+*   **Reason for Rejection**: Rejected by the Goldfish brainstorm review (the brainstorm review, §4), and kept by the author: separate cart tables keep orders meaning "something the customer confirmed".
 
 #### A5: Remove sold-out items from the cart automatically
 
 *   **Pros**: One tap less for the customer.
 *   **Cons**: The cart changes without the customer acting.
-*   **Reason for Rejection**: Rejected by author (concepts_brief_cart.md, Key Decisions): the line is flagged and checkout is blocked until the customer removes it.
+*   **Reason for Rejection**: Rejected by author (the cart brainstorm, Key Decisions): the line is flagged and checkout is blocked until the customer removes it.
 
 #### A6: A per-country price rule
 
 *   **Pros**: Resellers could adapt to local consumer law.
 *   **Cons**: A setting with no known case that needs it, and every reseller would have to interpret the law themselves.
-*   **Reason for Rejection**: Rejected during the brainstorm and accepted by the author (concepts_brief_cart.md, Alternatives Weighed): one rule, which is to show the final price on the confirmation screen and charge exactly that. That this fits EU consumer rules is the author's reading, not legal advice, and has not been verified.
+*   **Reason for Rejection**: Rejected during the brainstorm and accepted by the author (the cart brainstorm, Alternatives Weighed): one rule, which is to show the final price on the confirmation screen and charge exactly that. That this fits EU consumer rules is the author's reading, not legal advice, and has not been verified.
 
 #### A7: Abandoned-cart recovery by email, with discounts, or by bot reminders
 
@@ -571,49 +571,49 @@ The source for this group is concepts_brief_cart.md, "Alternatives Weighed" and 
     *   Email needs addresses the bot never collects.
     *   Discounts need a coupon system and per-order Stripe prices.
     *   Bot reminders are EU marketing messages: they need consent, an opt-out, delivery safeguards and another scheduled job.
-*   **Reason for Rejection**: Rejected by author for this design (concepts_brief_cart.md, Key Decisions). Bot reminders are kept as a future idea.
+*   **Reason for Rejection**: Rejected by author for this design (the cart brainstorm, Key Decisions). Bot reminders are kept as a future idea.
 
 #### A8: A configurable bot logo, or a welcome image
 
 *   **Pros**: Visual branding per shop.
 *   **Cons**: Bots can't set their profile photo through the API. A welcome image needs upload processing (SEC-11), caching of Telegram's copy, and a text fallback.
-*   **Reason for Rejection**: Rejected by author (concepts_brief_cart.md, Key Decisions): the profile photo set in BotFather gives the branding.
+*   **Reason for Rejection**: Rejected by author (the cart brainstorm, Key Decisions): the profile photo set in BotFather gives the branding.
 
 #### A9: Carry the confirmation screen as a hash in the button, or as a cart revision number
 
 *   **Pros**: A hash needs no new table and no write when the screen is drawn. A revision number keeps the token layout.
 *   **Cons**: A hash can show that something changed but can't recover what the customer confirmed. A revision number says nothing about prices on its own.
-*   **Reason for Rejection**: Rejected by author (concepts_brief_cart.md, Key Decisions): a stored snapshot keeps a record of what the bot prepared, which helps settle a disputed charge. The cart's revision number is still used inside the snapshot comparison.
+*   **Reason for Rejection**: Rejected by author (the cart brainstorm, Key Decisions): a stored snapshot keeps a record of what the bot prepared, which helps settle a disputed charge. The cart's revision number is still used inside the snapshot comparison.
 
 #### A10: Restore the cart automatically, an "Edit" button, or a customer cancel button on a pending order
 
 *   **Pros**: The customer gets their items back, or frees their pending slot, without waiting.
 *   **Cons**: An automatic restore surprises the customer. "Edit" and "cancel" both change a pending order and can race a payment finishing in another tab.
-*   **Reason for Rejection**: Rejected by author (concepts_brief_cart.md, Key Decisions; customer cancel deferred on 2026-11-25): "Repeat order" on cancelled unpaid orders gives the recovery path.
+*   **Reason for Rejection**: Rejected by author (the cart brainstorm, Key Decisions; customer cancel deferred on 2026-11-25): "Repeat order" on cancelled unpaid orders gives the recovery path.
 
 #### A11: A 60-minute window per Stripe session instead of per order
 
 *   **Pros**: Every link gets a full hour.
 *   **Cons**: Retries extend the hold. Without a cap on when the first link may be created, a hold could approach two hours.
-*   **Reason for Rejection**: Rejected by author (concepts_brief_cart.md, decision on the payment window): the short window exists to protect scarce stock.
+*   **Reason for Rejection**: Rejected by author (the cart brainstorm, decision on the payment window): the short window exists to protect scarce stock.
 
 #### A12: A quantity picker on the one-product order before building the cart
 
 *   **Pros**: A smaller first visible change.
 *   **Cons**: A temporary feature that the cart replaces.
-*   **Reason for Rejection**: Rejected by author (concepts_brief_cart.md, Key Decisions).
+*   **Reason for Rejection**: Rejected by author (the cart brainstorm, Key Decisions).
 
 #### A13: A one-line-per-cart release setting so the code can roll back
 
 *   **Pros**: Older code could be redeployed while the cart is being proven.
 *   **Cons**: An extra setting and a second release for a risk that doesn't exist yet.
-*   **Reason for Rejection**: Rejected by author (concepts_brief_cart.md, release safety): forward-only, with backups.
+*   **Reason for Rejection**: Rejected by author (the cart brainstorm, release safety): forward-only, with backups.
 
 #### A14: A unique short code (slug) per category in buttons
 
 *   **Pros**: Old catalogue buttons would keep working.
 *   **Cons**: A permanent field that owners must fill in, keep unique and never change.
-*   **Reason for Rejection**: Rejected by author (concepts_brief_cart.md, Key Decisions).
+*   **Reason for Rejection**: Rejected by author (the cart brainstorm, Key Decisions).
 
 #### A15: A drain command and a startup block for pre-cart orders
 
@@ -651,7 +651,7 @@ These were approved at the Technical Plan gate, 2026-11-24.
 
 *   **Pros**: An explicit check before the insert.
 *   **Cons**: It forms a lock cycle with cancellation through the foreign-key share lock, and it duplicates the unique constraint.
-*   **Reason for Rejection**: Rejected after the review (consolidated_review_report.md, item 🔴2): the constraint plus a savepoint enforces the rule without the extra lock.
+*   **Reason for Rejection**: Rejected after the review (the design review, item 🔴2): the constraint plus a savepoint enforces the rule without the extra lock.
 
 #### A20: Build a new snapshot when Confirm finds a change
 
@@ -1174,10 +1174,10 @@ Each stage is one branch and one PR. CI (`.github/workflows/tests.yml`) must pas
         *   the Stage 0 outcome.
     *   **Why:** the docs are part of what is sold.
 
-##### 45. `concepts_brief_cart.md`, `goldfish_cart_report.md`, `design_draft.md` (Keep)
+##### 45. Background documents (Removed)
 
-*   **Type / Scope**: Background documents.
-*   **Proposed Changes**: None. The final design lives under `docs/designs/`. The brief and report stay as background, and get committed or archived by the author.
+*   **Type / Scope**: The brainstorm, review and draft reports.
+*   **Proposed Changes**: Removed on 2026-11-27 before the repository went public; they remain in the git history. The final design lives under `docs/designs/`.
 
 ### Verification Plan
 

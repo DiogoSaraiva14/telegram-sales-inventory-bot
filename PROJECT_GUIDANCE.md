@@ -8,7 +8,7 @@ Status: imported baseline under overhaul. Done so far:
 
 All four are merged into `main`, as are the security fixes SEC-01 to SEC-13 and Stages 1–4 of the cart design.
 
-The business rules decided for checkout are recorded below. LocalReach remains the user's main development priority; this Telegram project is being reviewed as a bounded portfolio candidate.
+The business rules decided for checkout are recorded below. This is a bounded portfolio project.
 
 ## Product purpose
 
@@ -49,7 +49,7 @@ The strongest potential portfolio story is an end-to-end order and inventory wor
 
 ## Decisions recorded for the cart and resellable shop (2026-11-24/25)
 
-The design is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_shop.md). The brainstorm is concepts_brief_cart.md, and the reviews are consolidated_review_report.md and goldfish_review_report.md.
+The design is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_shop.md). The brainstorm and review reports were removed on 2026-11-27; they remain in the git history.
 
 - **Product:** the package is sold, with its rights, to a reseller. The reseller installs one separate copy per client shop, configured in Django admin without code changes. The part picker is dropped.
 - **Cart:**
@@ -78,7 +78,7 @@ The design is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellabl
 - **Release safety:** migrations only move forward, with a database backup before each one.
 - **Legal:** invoicing, tax, shipping, withdrawal handling and legal texts stay outside the bot and are each shop's responsibility, stated in the reseller contract. Not legal advice; unverified.
 - **Stage 0 outcome (2026-11-27):** the owner states the code's rights are theirs; `LICENSE` reserves all rights; the demo uses generated placeholder images. Still open: the invoicing clause in the reseller contract and the rest of the Stripe checklist. Details and the decision record: [docs/stage0_checklist.md](docs/stage0_checklist.md).
-- **End-to-end run (G13):** Partly done on 2026-11-27 (demo database, Stripe test mode, real webhook through the Stripe CLI): a two-product order with a changed quantity was paid with a test card, confirmed by the webhook, and the customer got "Pagamento confirmado"; the admin marked it shipped and delivered (a message for each); an unpaid order was cancelled with its stock returned; stock buttons, product on/off and customer block/unblock worked and were audited; stock matched the paid orders. Not yet run: a price change in a cart, cancelling a paid order (refund), and the 60-minute expiry. Fixes from the run: Django web logging, order lines on the admin order screen, a confirmation before cancelling, no blocking of admins from Telegram, and back buttons.
+- **End-to-end run (G13):** Done on 2026-11-27 (demo database, Stripe test mode, real webhook through the Stripe CLI): a two-product order with a changed quantity was paid with a test card, confirmed by the webhook, and the customer got "Pagamento confirmado"; the admin marked it shipped and delivered (a message for each); an unpaid order was cancelled with its stock returned; stock buttons, product on/off and customer block/unblock worked and were audited; stock matched the paid orders. The rest ran the same day: a price changed while in a cart was flagged, the old confirmation screen was refused and the order was charged the new price; a paid order was cancelled through the admin cancel service and Stripe showed a full refund (succeeded, €69.90), with the stock returned and the refund message sent; an unpaid order left for 60 minutes was cancelled by Stripe's `checkout.session.expired` webhook with its stock returned. Fixes from the run: Django web logging, order lines on the admin order screen, a confirmation before cancelling, no blocking of admins from Telegram, and back buttons.
 
 ## Business rules still open
 

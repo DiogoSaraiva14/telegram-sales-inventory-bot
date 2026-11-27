@@ -34,3 +34,6 @@ __pycache__/
 db.sqlite3
 media/
 graphify-out/
+
+# Private business documents (reseller contract); never published
+privado/
