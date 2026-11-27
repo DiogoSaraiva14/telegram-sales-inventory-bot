@@ -469,7 +469,7 @@ class MarkdownEscapingTests(SimpleTestCase):
         update = MagicMock()
         update.message.reply_text = AsyncMock()
         utilizador = SimpleNamespace(nome="Ana*_[x](y)", idioma="")
-        loja = SimpleNamespace(nome="Loja", texto_boas_vindas="Olá")
+        loja = SimpleNamespace(nome="Loja", texto_boas_vindas="Olá", imagem_boas_vindas=None)
         with patch.object(commands.services, "get_or_create_utilizador", AsyncMock(return_value=(utilizador, False))), \
              patch.object(commands.services, "obter_loja_async", AsyncMock(return_value=loja)), \
              patch.object(commands.services, "e_admin", AsyncMock(return_value=False)):
@@ -826,7 +826,7 @@ class LojaHandlerTests(SimpleTestCase):
         from telegram_bot.handlers import commands
         update = MagicMock()
         update.message.reply_text = AsyncMock()
-        loja = SimpleNamespace(nome="Loja *Top*", texto_boas_vindas="Promo_de [verão]")
+        loja = SimpleNamespace(nome="Loja *Top*", texto_boas_vindas="Promo_de [verão]", imagem_boas_vindas=None)
         with patch.object(commands.services, "get_or_create_utilizador",
                           AsyncMock(return_value=(SimpleNamespace(nome="Ana", idioma=""), True))), \
              patch.object(commands.services, "obter_loja_async", AsyncMock(return_value=loja)), \
@@ -851,6 +851,34 @@ class LojaHandlerTests(SimpleTestCase):
              patch.object(commands.services, "obter_loja_async", AsyncMock(return_value=loja)):
             await inspect.unwrap(commands.admin_command)(update, MagicMock())
         self.assertTrue(update.message.reply_text.await_args.args[0].startswith("🔐 *Painel Admin — Jarvis PCs*"))
+
+    async def _start_com_imagem(self, imagem):
+        from telegram_bot.handlers import commands
+        ordem = []
+        update = MagicMock()
+        update.message.reply_photo = AsyncMock(side_effect=lambda **k: ordem.append("foto"))
+        update.message.reply_text = AsyncMock(side_effect=lambda *a, **k: ordem.append("texto"))
+        loja = SimpleNamespace(nome="Loja", texto_boas_vindas="Olá", imagem_boas_vindas=imagem)
+        with patch.object(commands.services, "get_or_create_utilizador",
+                          AsyncMock(return_value=(SimpleNamespace(nome="Ana", idioma=""), False))), \
+             patch.object(commands.services, "obter_loja_async", AsyncMock(return_value=loja)), \
+             patch.object(commands.services, "e_admin", AsyncMock(return_value=False)):
+            await inspect.unwrap(commands.start)(update, MagicMock())
+        return ordem, update
+
+    async def test_start_sends_the_shop_welcome_photo_above_the_menu(self):
+        imagem = MagicMock()
+        imagem.open.return_value.__enter__.return_value = "ficheiro"
+        ordem, update = await self._start_com_imagem(imagem)
+        self.assertEqual(ordem, ["foto", "texto"])
+        update.message.reply_photo.assert_awaited_once_with(photo="ficheiro")
+
+    async def test_a_missing_welcome_photo_still_shows_the_menu(self):
+        imagem = MagicMock()
+        imagem.open.side_effect = FileNotFoundError("apagada")
+        with self.assertLogs("telegram_bot.handlers.commands", "WARNING"):
+            ordem, _ = await self._start_com_imagem(imagem)
+        self.assertEqual(ordem, ["texto"])
 
     def test_main_menu_shows_the_admin_button_only_for_admins(self):
         self.assertNotIn("admin_menu", [d for _, d in _botoes(keyboards.teclado_menu_principal(False))])
