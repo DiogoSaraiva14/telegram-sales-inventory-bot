@@ -1,6 +1,6 @@
 # Repository agent instructions
 
-Status: draft guidance for this standalone private repository.
+Status: guidance for this standalone repository.
 
 ## Project context
 
@@ -20,7 +20,7 @@ Read README.md, PROJECT_GUIDANCE.md, ARCHITECTURE.md, SECURITY.md, and ROADMAP.m
 - Keep Telegram admin and Django admin behavior consistent by routing mutations through one business service.
 - Preserve the existing data model and migration history unless a migration is explicitly in scope. Explain data impact before introducing a migration.
 - Never add real tokens, Stripe secrets, credentials, customer data, or production exports to the repository. Use environment variables and example placeholders only.
-- Keep the repository private until source ownership/course sharing terms and asset rights are confirmed by the owner.
+- Keep private business documents (contracts, pricing) out of the repository; `privado/` is git-ignored for them.
 - Do not describe the system as production-ready until runtime behavior, configuration, payment behavior, and verification evidence support that claim.
 
 ## Review and verification

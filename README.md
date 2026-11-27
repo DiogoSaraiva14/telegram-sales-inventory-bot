@@ -74,8 +74,8 @@ More detail: [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY.md](SECURITY.md) (fin
 - **Tests:** 232 automated tests, run by CI on every pull request with PostgreSQL 17, plus a migration drift check.
   - `core/tests.py` (147, PostgreSQL): order creation from snapshots, the payment window and session recovery, the webhook, cancellation and refunds, the cleanup, the notification queue, the state machine, admin actions and permissions, personal-data rules, and threaded tests that prove the row locks and the absence of deadlocks.
   - `telegram_bot/tests.py` (85, mocks only): routing and the callback allowlist, the admin gate, every screen's buttons, and log privacy.
-- **Live run (2026-11-27):** on a demo database with Stripe in test mode and its real webhook, a two-product order was paid, confirmed, shipped and delivered with a customer message at each step; unpaid orders were cancelled with stock returned; stock, product and customer actions were audited. Not yet run live: a price change in a cart, the refund of a paid order, and the 60-minute expiry.
-- **Not done:** no copy is deployed. Before taking real payments, finish the [Stripe test-mode checklist](DEPLOYMENT.md#10-stripe-test-mode-checklist).
+- **Live run (2026-11-27):** on a demo database with Stripe in test mode and its real webhook, a two-product order was paid, confirmed, shipped and delivered with a customer message at each step; unpaid orders were cancelled with stock returned; stock, product and customer actions were audited. A price change in a cart, the full refund of a paid order and the 60-minute expiry also passed.
+- **Not done:** no copy is deployed. Run the [Stripe test-mode checklist](DEPLOYMENT.md#10-stripe-test-mode-checklist) again on each new copy before switching to live keys.
 
 ## Quick start (demo)
 
@@ -123,6 +123,19 @@ scripts/                   avisos_terceiros.py: regenerates the third-party noti
 docs/                      cart design, Stage 0 checklist, screenshots
 ```
 
+## Documentation
+
+| File | What it covers |
+| --- | --- |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Processes, data model, service layer and locking |
+| [SECURITY.md](SECURITY.md) | Security findings SEC-01 to SEC-13 and their fixes |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Installing a copy for a shop, personal data, the Stripe test-mode checklist, backups |
+| [ROADMAP.md](ROADMAP.md) | The phases of the overhaul and their state |
+| [PROJECT_GUIDANCE.md](PROJECT_GUIDANCE.md) | Business rules and decisions recorded during the work |
+| [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_shop.md) | Design of the cart and the one-copy-per-shop package |
+| [docs/stage0_checklist.md](docs/stage0_checklist.md) | Rights, licence, images and Stripe test run before selling copies |
+| [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md) | Working rules for AI coding agents on this repository |
+
 ## Configuration
 
 Everything comes from environment variables; `.env.example` lists each one and which commands need it. `DEBUG` defaults to False and `ALLOWED_HOSTS` to empty. For a public deployment set `DJANGO_HTTPS=True` (HTTPS redirect, secure cookies, HSTS) and `CSRF_TRUSTED_ORIGINS`. Never commit real values.
@@ -148,6 +161,6 @@ Everything comes from environment variables; `.env.example` lists each one and w
 
 ## Licence and origin
 
-Copyright © 2026 Jose Diogo Pereira Saraiva. **All rights reserved**; see [LICENSE](LICENSE). Third-party packages keep their own licences: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and `third_party_licenses/`.
+Copyright © 2026 Jose Diogo Pereira Saraiva. **All rights reserved**; see [LICENSE](LICENSE). The source is public so it can be read and reviewed; using, copying, modifying or deploying it needs a written agreement with the author. Third-party packages keep their own licences: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and `third_party_licenses/`.
 
 The project began as the author's course project and has since been largely rewritten. The original product images are not included; the demo uses generated placeholders.
