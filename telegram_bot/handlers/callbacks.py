@@ -13,6 +13,8 @@ from security.sanitization import validar_callback, EntradaInvalida, pseudonimo
 from core import services
 from telegram_bot.guards import verificar_bloqueio, verificar_sessao
 from telegram_bot.handlers import admin, customer
+from telegram_bot.traducoes import tr
+from telegram_bot.ui import idioma_rapido
 
 logger = logging.getLogger(__name__)
 
@@ -67,14 +69,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data = validar_callback(query.data)
         except EntradaInvalida as exc:
             logger.warning("callback_data inválido de utilizador=%s: %s", pseudonimo(user_id), exc)
-            await query.answer("❌ Pedido inválido.", show_alert=True)
+            await query.answer(tr(idioma_rapido(context, query.from_user), "❌ Pedido inválido."), show_alert=True)
             return
 
         handler, admin_only = encontrar_rota(data)
         if handler is None:
             return
         if admin_only and not await services.e_admin(user_id):
-            await query.answer("⛔ Acesso negado.", show_alert=True)
+            await query.answer(tr(idioma_rapido(context, query.from_user), "⛔ Acesso negado."), show_alert=True)
             return
         await handler(query, context, data, user_id)
     finally:

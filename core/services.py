@@ -29,6 +29,7 @@ from core.models import (
 )
 from security.sanitization import validar_telegram_id, sanitizar_nome_utilizador
 from core.notificacoes import enfileirar
+from telegram_bot.traducoes import IDIOMAS, idioma_de_codigo
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 logger = logging.getLogger(__name__)
@@ -47,13 +48,27 @@ MAX_QUANTIDADE = 99
 def _obter_ou_criar_utilizador(user):
     telegram_id_limpo = validar_telegram_id(user.id)
     nome_limpo = sanitizar_nome_utilizador(user.full_name)
-    return Utilizador.objects.get_or_create(
+    idioma = idioma_de_codigo(getattr(user, "language_code", None))
+    utilizador, criado = Utilizador.objects.get_or_create(
         telegram_id=telegram_id_limpo,
-        defaults={"nome": nome_limpo, "username": user.username or ""}
+        defaults={"nome": nome_limpo, "username": user.username or "", "idioma": idioma}
     )
+    if not utilizador.idioma:  # customers from before languages existed: take Telegram's once
+        utilizador.idioma = idioma
+        utilizador.save(update_fields=["idioma"])
+    return utilizador, criado
 
 async def get_or_create_utilizador(user):
     return await sync_to_async(_obter_ou_criar_utilizador)(user)
+
+async def idioma_guardado(user_id) -> str:
+    """The customer's saved bot language, or '' if none is saved yet."""
+    return await Utilizador.objects.filter(telegram_id=str(user_id)).values_list('idioma', flat=True).afirst() or ''
+
+async def definir_idioma(user_id, idioma: str) -> None:
+    if idioma not in IDIOMAS:
+        raise ValueError(idioma)
+    await Utilizador.objects.filter(telegram_id=str(user_id)).aupdate(idioma=idioma)
 
 async def utilizador_bloqueado(user_id: int) -> bool:
     try:

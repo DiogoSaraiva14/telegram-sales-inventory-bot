@@ -11,6 +11,8 @@ from telegram.ext import ContextTypes
 
 from core.services import utilizador_bloqueado
 from security.sanitization import pseudonimo
+from telegram_bot.traducoes import tr
+from telegram_bot.ui import idioma_rapido
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +50,14 @@ def verificar_sessao(func):
         if update.callback_query:
             if _sessao_expirada(user_id):
                 logger.info("Sessão expirada: utilizador=%s", pseudonimo(user_id))
+                i = idioma_rapido(context, update.effective_user)
                 await update.callback_query.answer(
-                    "⏱️ A tua sessão expirou. Usa /start para recomeçar.",
+                    tr(i, "⏱️ A tua sessão expirou. Usa /start para recomeçar."),
                     show_alert=True
                 )
                 try:
                     await update.callback_query.edit_message_text(
-                        "⏱️ *Sessão expirada.*\n\nUsa /start para voltar ao menu principal.",
+                        tr(i, "⏱️ *Sessão expirada.*\n\nUsa /start para voltar ao menu principal."),
                         parse_mode="Markdown"
                     )
                 except Exception:
@@ -72,16 +75,16 @@ def verificar_bloqueio(func):
         user_id = update.effective_user.id
         if await utilizador_bloqueado(user_id):
             logger.warning("Utilizador bloqueado tentou aceder: utilizador=%s", pseudonimo(user_id))
+            i = idioma_rapido(context, update.effective_user)
             if update.message:
                 await update.message.reply_text(
-                    "🚫 A tua conta foi suspensa.\n"
-                    "Contacta o suporte se acreditas que isto é um erro."
+                    tr(i, "🚫 A tua conta foi suspensa.\nContacta o suporte se acreditas que isto é um erro.")
                 )
             elif update.callback_query:
-                await update.callback_query.answer("🚫 A tua conta está suspensa.", show_alert=True)
+                await update.callback_query.answer(tr(i, "🚫 A tua conta está suspensa."), show_alert=True)
                 try:
                     await update.callback_query.edit_message_text(
-                        "🚫 *Conta suspensa.*\n\nContacta o suporte se acreditas que isto é um erro.",
+                        tr(i, "🚫 *Conta suspensa.*\n\nContacta o suporte se acreditas que isto é um erro."),
                         parse_mode="Markdown"
                     )
                 except Exception:

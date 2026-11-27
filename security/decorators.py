@@ -7,6 +7,8 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from security.sanitization import pseudonimo
+from telegram_bot.traducoes import tr
+from telegram_bot.ui import idioma_rapido
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +48,12 @@ def rate_limit(func):
             ]
             if len(_rate_data[user_id]) >= RATE_LIMIT:
                 logger.warning("Rate limit atingido: utilizador=%s", pseudonimo(user_id))
+                i = idioma_rapido(context, update.effective_user)
                 if update.message:
-                    await update.message.reply_text(
-                        "⚠️ Demasiados pedidos. Aguarda alguns segundos."
-                    )
+                    await update.message.reply_text(tr(i, "⚠️ Demasiados pedidos. Aguarda alguns segundos."))
                 elif update.callback_query:
                     # A toast, not a pop-up the customer has to dismiss.
-                    await update.callback_query.answer("⚠️ Demasiados pedidos. Aguarda um momento.")
+                    await update.callback_query.answer(tr(i, "⚠️ Demasiados pedidos. Aguarda um momento."))
                 return
             _rate_data[user_id].append(agora)
 

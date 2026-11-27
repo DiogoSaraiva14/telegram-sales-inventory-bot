@@ -19,6 +19,9 @@ class Utilizador(models.Model):
     motivo_bloqueio = models.TextField(blank=True, null=True)  # ✅ NOVO — registo da razão do bloqueio
     # Telegram admin rights (cart design, Stage 4); only a superuser can change it in Django admin.
     e_admin       = models.BooleanField(default=False)
+    # Bot language: taken from Telegram on /start while empty, then changed only by the customer.
+    idioma        = models.CharField(max_length=2, blank=True, default='',
+                                     choices=[('pt', 'Português'), ('en', 'English')])
 
     def __str__(self):
         return f"{self.nome} ({self.telegram_id})"

@@ -2165,3 +2165,30 @@ class CriarDemoTests(TestCase):
         with self.assertRaises(CommandError):
             self.correr()
         self.assertEqual(Produto.objects.count(), 1)
+
+
+class IdiomaClienteTests(TestCase):
+    """The customer's bot language is saved, and their order messages follow it."""
+
+    def test_new_customer_gets_telegram_language_and_blank_one_is_filled_once(self):
+        tg = SimpleNamespace(id=7001, full_name="Ann", username="ann", language_code="de")
+        utilizador, criado = services._obter_ou_criar_utilizador(tg)
+        self.assertEqual((criado, utilizador.idioma), (True, "en"))
+        antigo = Utilizador.objects.create(telegram_id="7002", nome="Velho")  # from before languages
+        services._obter_ou_criar_utilizador(SimpleNamespace(id=7002, full_name="Velho", username="", language_code="pt-br"))
+        self.assertEqual(Utilizador.objects.get(pk=antigo.pk).idioma, "pt")
+        async_to_sync(services.definir_idioma)(7001, "pt")  # an explicit choice is not overwritten by Telegram's
+        self.assertEqual(services._obter_ou_criar_utilizador(tg)[0].idioma, "pt")
+        self.assertEqual(async_to_sync(services.idioma_guardado)(7001), "pt")
+        with self.assertRaises(ValueError):
+            async_to_sync(services.definir_idioma)(7001, "fr")
+
+    def test_order_messages_are_queued_in_the_customer_language(self):
+        from core import notificacoes
+        for idioma, inicio in (("en", "🚚 *Your order has shipped!*"), ("", "🚚 *A tua encomenda foi enviada!*")):
+            cliente = Utilizador.objects.create(telegram_id=f"80{len(idioma)}", nome="X", idioma=idioma)
+            encomenda = Encomenda.objects.create(utilizador=cliente, estado="enviada", total=Decimal("9.99"))
+            notificacoes.enfileirar(encomenda, "enviada")
+            texto = encomenda.notificacoes.get().texto
+            self.assertTrue(texto.startswith(inicio), texto)
+            self.assertIn("9.99€", texto)
