@@ -409,14 +409,14 @@ class AdminCancelHandlerTests(SimpleTestCase):
         responder, notificar = AsyncMock(), MagicMock(return_value=True)
         with patch.object(admin.services, "cancelar_encomenda_db", AsyncMock(**servico)), \
              patch.object(admin.services, "registar_auditoria", AsyncMock()), \
-             patch.object(admin, "responder", responder), patch.object(admin, "notificar_estado", notificar):
+             patch.object(admin, "responder", responder), patch.object(admin, "enviar_da_encomenda", notificar):
             await admin._mudar_estado_e_notificar(query, MagicMock(), 1, 7, "cancelada", "CANCELAR")
         return responder.await_args.args[2], notificar
 
     async def test_refunded_cancel_sends_the_refund_message(self):
         encomenda = SimpleNamespace(id=7, total=Decimal("9.99"), utilizador=SimpleNamespace(nome="Ana"))
         texto, notificar = await self._cancelar(return_value=("reembolsada", encomenda))
-        self.assertEqual(notificar.call_args.args[1], "reembolsada")
+        self.assertEqual(notificar.call_args.args[0], 7)
         self.assertIn("marcada como *cancelada*", texto)
 
     async def test_payment_just_received_is_not_cancelled(self):
@@ -570,7 +570,7 @@ class AdminStatusHandlerTests(SimpleTestCase):
         query.answer = AsyncMock()
         responder, notificar = AsyncMock(), MagicMock()
         with patch.object(admin.services, "atualizar_estado_encomenda", AsyncMock(return_value=None)), \
-             patch.object(admin, "responder", responder), patch.object(admin, "notificar_estado", notificar):
+             patch.object(admin, "responder", responder), patch.object(admin, "enviar_da_encomenda", notificar):
             await admin._mudar_estado_e_notificar(query, MagicMock(), 1, 5, "enviada", "ENVIAR")
         self.assertIn("não encontrada ou estado inválido", responder.await_args.args[2])
         notificar.assert_not_called()

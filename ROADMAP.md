@@ -67,15 +67,15 @@ The plan is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellable_
 - Make Stripe webhook updates idempotent and safe under retries and concurrent delivery.
 - Make payment success/cancellation/refund and order fulfillment consistent across Telegram admin, Django admin, and Stripe.
 - Prevent Django admin line edits from leaving order totals, payments, or stock movements inconsistent.
-- Separate notification delivery from committed payment/order state and support retry. (Done: `core/notificacoes.py` queues each message after the change commits, and the cleanup run resends it for 24 hours.)
+- Separate notification delivery from committed payment/order state and support retry. (Done: each order and payment service queues its message in the same transaction as the change; the caller sends it, and the cleanup run resends anything still queued for 24 hours.)
 
 **Done when:** failure, retry, duplicate event, expiry, cancellation, and concurrent checkout scenarios preserve agreed invariants.
 
 ## Phase 3 — Refactor for maintainability
 
 - Split bot.py into routing, keyboards/presentation, and domain services. (Done: telegram_bot/ and core/services.py. Bot checkout is transactional, and so are the Telegram admin product, stock and customer actions, each with its audit row in the same transaction.)
-- Replace duplicated Telegram/Django admin business logic with shared operations.
-- Give state-changing operations explicit inputs/outputs and audit behavior.
+- Replace duplicated Telegram/Django admin business logic with shared operations. (Done: cancelling, the status steps, stock edits, product activation and customer blocking each use one service from both admin surfaces.)
+- Give state-changing operations explicit inputs/outputs and audit behavior. (Done: every service that changes an order, payment, stock, product or customer returns its result and writes its audit row and customer message in the same transaction. Cart drafts and draft cleanup are not audited, by design.)
 - Rate and session state are bounded and single-process (SEC-09). Externalize them only if the bot moves to webhook mode with several workers.
 - Paginate product, customer, and order lists. (Done: the Telegram admin product, stock, order, customer and audit lists show 10 per page.)
 

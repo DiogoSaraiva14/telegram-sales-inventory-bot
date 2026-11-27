@@ -28,6 +28,7 @@ from core.models import (
     MovimentoStock, RegistoAuditoria, Pagamento,
 )
 from security.sanitization import validar_telegram_id, sanitizar_nome_utilizador
+from core.notificacoes import enfileirar
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 logger = logging.getLogger(__name__)
@@ -243,6 +244,7 @@ def avancar_estado_encomenda(encomenda_id: int, novo_estado: str, origem: str = 
             utilizador=encomenda.utilizador, acao=f'ENCOMENDA_{novo_estado.upper()}', entidade='Encomenda',
             descricao=f'#{encomenda.id} {anterior} -> {novo_estado} ({origem or "admin"})',
         )
+        enfileirar(encomenda, novo_estado)
     return encomenda
 
 async def atualizar_estado_encomenda(encomenda_id: int, novo_estado: str):
@@ -681,7 +683,8 @@ def _pagamento_de(encomenda):
 def _terminar_prazo(encomenda, motivo):
     """The payment window is over: cancel the order instead of creating a new session."""
     try:
-        resultado, _ = cancelar_encomenda(encomenda.pk, motivo)
+        # The customer is on the payment screen and is told there, so no message is queued.
+        resultado, _ = cancelar_encomenda(encomenda.pk, motivo, notificar=False)
     except PagamentoRecebido:
         return ("a_confirmar", None)
     return ("expirada", None) if resultado == 'cancelada' else ("nao_ativa", None)
@@ -740,7 +743,7 @@ async def garantir_sessao_pagamento_async(encomenda):
 
 # ── Confirmação do pagamento (SEC-05) ─────────────────────────────────────
 
-def confirmar_pagamento(pagamento_id: int, sessao_id: str):
+def confirmar_pagamento(pagamento_id: int, sessao_id: str, mensagem: str = 'pagamento_confirmado'):
     """A Stripe Checkout Session completed: mark the payment paid and the order confirmed.
 
     One transaction under the order row lock, then the payment row lock (the same order
@@ -765,6 +768,7 @@ def confirmar_pagamento(pagamento_id: int, sessao_id: str):
                 utilizador=encomenda.utilizador, acao='PAGAMENTO_REEMBOLSADO', entidade='Pagamento',
                 descricao=f'Encomenda #{encomenda.id} já cancelada: pagamento reembolsado (session={sessao_id})',
             )
+            enfileirar(encomenda, 'reembolsada')
             return 'reembolsada'
         _mudar_estado(pagamento, 'pago')
         pagamento.save(update_fields=['estado_pagamento', 'data_pagamento'])
@@ -774,6 +778,7 @@ def confirmar_pagamento(pagamento_id: int, sessao_id: str):
             utilizador=encomenda.utilizador, acao='PAGAMENTO_CONFIRMADO', entidade='Pagamento',
             descricao=f'Encomenda #{encomenda.id} paga via Stripe (session={sessao_id})',
         )
+        enfileirar(encomenda, mensagem)
     return 'confirmada'
 
 
@@ -804,7 +809,7 @@ def _devolver_stock(encomenda, observacoes):
         )
 
 
-def cancelar_encomenda(encomenda_id: int, origem: str = ''):
+def cancelar_encomenda(encomenda_id: int, origem: str = '', notificar: bool = True):
     """Cancel a pending or confirmed order, for every admin surface.
 
     Settles the Stripe payment first: an open session is expired, a paid one is refunded
@@ -847,6 +852,8 @@ def cancelar_encomenda(encomenda_id: int, origem: str = ''):
             descricao=f'#{encomenda.id} cancelada ({origem or "admin"}); stock devolvido'
                       + ('; pagamento reembolsado' if resultado == 'reembolsada' else ''),
         )
+        if notificar:
+            enfileirar(encomenda, resultado)
     return (resultado, encomenda)
 
 
@@ -885,7 +892,7 @@ def reconciliar_encomenda(encomenda_id: int, horas: int = 24):
                 resultado, encomenda = cancelar_encomenda(
                     encomenda_id, f'limpeza: sem pagamento há mais de {horas} h')
             except PagamentoRecebido:  # the stored session is complete
-                resultado = confirmar_pagamento(pagamento.pk, pagamento.stripe_session_id)
+                resultado = confirmar_pagamento(pagamento.pk, pagamento.stripe_session_id, mensagem='confirmada')
                 encomenda.refresh_from_db(fields=['estado'])
                 return (resultado, encomenda)
             return ("cancelada" if resultado == 'cancelada' else None, encomenda)
@@ -926,4 +933,5 @@ def cancelar_por_expiracao(pagamento_id: int, sessao_id: str) -> bool:
             utilizador=encomenda.utilizador, acao='CANCELAR_ENCOMENDA_EXPIRADA', entidade='Encomenda',
             descricao=f'#{encomenda.id} cancelada e stock devolvido após expiração do pagamento',
         )
+        enfileirar(encomenda, 'cancelada')
     return True

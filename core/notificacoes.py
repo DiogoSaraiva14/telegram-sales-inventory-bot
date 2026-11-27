@@ -1,7 +1,9 @@
-"""Customer order messages: queued, sent at once, and resent by the cleanup run for 24 hours.
+"""Customer order messages: queued with the order change, sent after it, resent for 24 hours.
 
-Every message is saved before it is sent, so a Telegram failure leaves it queued instead of lost.
-A row is locked while it is being sent, so the immediate attempt and a cleanup run never both send it.
+Each order and payment service queues its message (enfileirar) inside its own transaction, so the
+change and its message commit together or not at all. The caller then sends it (enviar_da_encomenda);
+anything still queued is resent by the cleanup run. A row is locked while it is being sent, so the
+immediate attempt and a cleanup run never both send it.
 """
 import logging
 from datetime import timedelta
@@ -21,19 +23,19 @@ JANELA_REENVIO = timedelta(hours=24)  # owner decision (2026-11-25): retry for 2
 ENVIADA, PERMANENTE, TEMPORARIA = 'enviada', 'permanente', 'temporaria'
 
 
-def notificar_estado(encomenda, chave) -> bool:
-    """Customer message for an order state; chave is a MENSAGENS_NOTIFICACAO key. True if delivered now."""
-    template = MENSAGENS_NOTIFICACAO.get(chave)
-    if not template:
-        logger.error("Sem mensagem para o estado %s: encomenda=#%s", chave, encomenda.id)
-        return False
-    return notificar(encomenda, template.format(id=encomenda.id, total=float(encomenda.total)))
+def enfileirar(encomenda, chave):
+    """Queue the customer message chave (a MENSAGENS_NOTIFICACAO key); call it inside the change's transaction."""
+    texto = MENSAGENS_NOTIFICACAO[chave].format(id=encomenda.id, total=float(encomenda.total))
+    Notificacao.objects.create(encomenda=encomenda, chat_id=encomenda.utilizador.telegram_id, texto=texto)
 
 
-def notificar(encomenda, texto) -> bool:
-    """Queue a message for the order's customer and try to send it now. True if delivered now."""
-    n = Notificacao.objects.create(encomenda=encomenda, chat_id=encomenda.utilizador.telegram_id, texto=texto)
-    return _tentar(n.pk)
+def enviar_da_encomenda(encomenda_id) -> bool:
+    """Send this order's queued messages now, after the change committed. True if all of them were delivered."""
+    pks = list(Notificacao.objects.filter(encomenda_id=encomenda_id, estado='pendente')
+               .order_by('id').values_list('pk', flat=True))
+    for pk in pks:
+        _tentar(pk)
+    return not Notificacao.objects.filter(pk__in=pks).exclude(estado='enviada').exists()
 
 
 def reenviar_pendentes() -> tuple:

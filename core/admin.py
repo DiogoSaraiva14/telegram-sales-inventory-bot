@@ -6,7 +6,7 @@ from django.db import transaction
 from django.shortcuts import redirect
 import stripe
 from . import services
-from .notificacoes import notificar_estado
+from .notificacoes import enviar_da_encomenda
 from .models import (
     Utilizador, Categoria, Loja, Produto, Encomenda,
     LinhaEncomenda, Pagamento, MovimentoStock, RegistoAuditoria
@@ -203,7 +203,7 @@ class EncomendaAdmin(admin.ModelAdmin):
             if encomenda is None:
                 recusadas.append(f"#{encomenda_id}")
                 continue
-            notificar_estado(encomenda, novo_estado)
+            enviar_da_encomenda(encomenda.id)
             feitas += 1
         self.message_user(request, f"{feitas} encomenda(s) marcada(s) como {rotulo}.", messages.SUCCESS)
         if recusadas:
@@ -239,7 +239,7 @@ class EncomendaAdmin(admin.ModelAdmin):
             if resultado == 'invalida':
                 falhas.append(f"#{encomenda_id} (estado não permite cancelar)")
                 continue
-            notificar_estado(encomenda, resultado)
+            enviar_da_encomenda(encomenda.id)
             canceladas += 1
         self.message_user(request, f"{canceladas} encomenda(s) cancelada(s).", messages.WARNING)
         if falhas:

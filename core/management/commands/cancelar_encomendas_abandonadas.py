@@ -3,14 +3,14 @@
 Each one is cancelled with its stock returned (and any open Stripe session expired),
 or confirmed if its stored Stripe session was paid. A Stripe or database error leaves
 the order unchanged for the next run. The same run deletes unused confirmation
-screens after 45 minutes and idle carts after 30 days, and resends queued customer messages
-(given up after 24 hours, with an audit row). Run it from cron every 5 minutes:
+screens after 45 minutes and idle carts after 30 days, and sends every queued customer message,
+including the ones this run queued (given up after 24 hours, with an audit row). Run it from cron every 5 minutes:
     python manage.py cancelar_encomendas_abandonadas --horas 1
 """
 from django.core.management.base import BaseCommand, CommandError
 
 from core import services
-from core.notificacoes import notificar_estado, reenviar_pendentes
+from core.notificacoes import reenviar_pendentes
 
 
 class Command(BaseCommand):
@@ -26,9 +26,7 @@ class Command(BaseCommand):
             raise CommandError("--horas tem de ser pelo menos 1.")
         contagem = {"confirmada": 0, "cancelada": 0, "erro": 0}
         for encomenda_id in services.encomendas_abandonadas(horas):
-            resultado, encomenda = services.reconciliar_encomenda(encomenda_id, horas)
-            if resultado in ("confirmada", "cancelada"):  # the transaction committed; tell the customer
-                notificar_estado(encomenda, resultado)
+            resultado, _ = services.reconciliar_encomenda(encomenda_id, horas)  # queues the customer message
             if resultado in contagem:
                 contagem[resultado] += 1
         ecras, carrinhos = services.limpar_rascunhos()
@@ -36,5 +34,5 @@ class Command(BaseCommand):
         self.stdout.write(
             f"Limpeza: {contagem['confirmada']} confirmada(s), {contagem['cancelada']} cancelada(s), "
             f"{contagem['erro']} erro(s); {ecras} ecrã(s) e {carrinhos} carrinho(s) apagados; "
-            f"notificações: {enviadas} reenviada(s), {falhadas} abandonada(s)."
+            f"notificações: {enviadas} enviada(s), {falhadas} abandonada(s)."
         )
