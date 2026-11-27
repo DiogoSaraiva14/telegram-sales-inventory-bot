@@ -1,6 +1,12 @@
 """Static labels and message templates shown to Telegram users."""
 
 MENSAGENS_NOTIFICACAO = {
+    'pagamento_confirmado': (  # sent when the Stripe webhook confirms the payment
+        "✅ *Pagamento confirmado!*\n\n"
+        "📦 Encomenda #{id}\n"
+        "💶 Total: {total:.2f}€\n\n"
+        "O teu pagamento foi recebido. Estamos a preparar o teu pedido! 🙏"
+    ),
     'confirmada': (
         "✅ *A tua encomenda foi confirmada!*\n\n"
         "📦 Encomenda #{id}\n"

@@ -6,7 +6,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from .models import Pagamento
 from . import services
-from .notificacoes import notificar, notificar_estado
+from .notificacoes import enviar_da_encomenda
 
 logger = logging.getLogger(__name__)
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -60,23 +60,12 @@ def _handle_payment_success(session):
         logger.info("Evento duplicado ignorado: session_id=%s", session_id)
         return
 
-    encomenda = pagamento.encomenda
     if resultado == 'reembolsada':
-        logger.warning("Pagamento de encomenda cancelada reembolsado: encomenda_id=%s", encomenda.id)
-        notificar_estado(encomenda, resultado)
-        return
-    logger.info("Pagamento confirmado: encomenda_id=%s", encomenda.id)
-    # After the commit, and only by the delivery that confirmed it: at most one message.
-    _notificar_pagamento_telegram(encomenda)
-
-
-def _notificar_pagamento_telegram(encomenda):
-    notificar(encomenda, (
-        f"✅ *Pagamento confirmado!*\n\n"
-        f"📦 Encomenda #{encomenda.id}\n"
-        f"💶 Total: {encomenda.total:.2f}€\n\n"
-        f"O teu pagamento foi recebido. Estamos a preparar o teu pedido! 🙏"
-    ))
+        logger.warning("Pagamento de encomenda cancelada reembolsado: encomenda_id=%s", pagamento.encomenda_id)
+    else:
+        logger.info("Pagamento confirmado: encomenda_id=%s", pagamento.encomenda_id)
+    # The service queued the message with the change; only the delivery that changed something sends it.
+    enviar_da_encomenda(pagamento.encomenda_id)
 
 
 def _handle_payment_expired(session):
@@ -96,5 +85,5 @@ def _handle_payment_expired(session):
     # SEC-04 (owner decision): an expired session cancels its unpaid order and returns the stock.
     cancelada = services.cancelar_por_expiracao(pagamento.pk, session_id)
     logger.info("Pagamento expirado: encomenda_id=%s cancelada=%s", pagamento.encomenda_id, cancelada)
-    if cancelada:  # the transaction has committed, so the customer is told only about a real cancellation
-        notificar_estado(pagamento.encomenda, 'cancelada')
+    if cancelada:  # the message was queued with the cancellation; send it now
+        enviar_da_encomenda(pagamento.encomenda_id)

@@ -1028,6 +1028,9 @@ class CancelamentoTests(TestCase):
         self.pagar()
         self.retrieve.return_value = SimpleNamespace(status="open", payment_intent="pi_late")
         services.cancelar_encomenda(self.encomenda.id)
+        from core.notificacoes import enviar_da_encomenda
+        enviar_da_encomenda(self.encomenda.id)  # the admin sends the cancellation message, as its caller does
+        self.post.reset_mock()
         _handle_payment_success({"id": "cs_c"})
         _handle_payment_success({"id": "cs_c"})  # duplicate delivery
         self.refund.assert_called_once()
@@ -1934,6 +1937,11 @@ class FilaNotificacoesTests(TestCase):
         p.enable()
         self.addCleanup(p.disable)
 
+    def notificar(self):
+        """Queue a "shipped" message as a service would, then send it as the caller does."""
+        self.notificacoes.enfileirar(self.encomenda, "enviada")
+        return self.notificacoes.enviar_da_encomenda(self.encomenda.id)
+
     def enviar(self, *respostas):
         """Patch Telegram to answer with these status codes (an exception class means a network error)."""
         efeitos = [r if isinstance(r, type) else MagicMock(status_code=r) for r in respostas]
@@ -1941,7 +1949,7 @@ class FilaNotificacoesTests(TestCase):
 
     def test_a_delivered_message_is_marked_sent(self):
         with self.enviar(200) as post:
-            self.assertTrue(self.notificacoes.notificar_estado(self.encomenda, "enviada"))
+            self.assertTrue(self.notificar())
         n = Notificacao.objects.get()
         self.assertEqual((n.estado, n.tentativas, n.chat_id), ("enviada", 1, "5550001"))
         self.assertIsNotNone(n.enviada_em)
@@ -1950,7 +1958,7 @@ class FilaNotificacoesTests(TestCase):
     def test_a_temporary_failure_is_resent_by_the_cleanup_run(self):
         import httpx
         with self.enviar(httpx.ConnectError, 502, 200):
-            self.assertFalse(self.notificacoes.notificar_estado(self.encomenda, "enviada"))
+            self.assertFalse(self.notificar())
             self.assertEqual(self.notificacoes.reenviar_pendentes(), (0, 0))
             self.assertEqual(self.notificacoes.reenviar_pendentes(), (1, 0))
         self.assertEqual(Notificacao.objects.values_list("estado", "tentativas").get(), ("enviada", 3))
@@ -1958,7 +1966,7 @@ class FilaNotificacoesTests(TestCase):
 
     def test_a_blocked_bot_is_given_up_at_once_and_audited(self):
         with self.enviar(403):
-            self.assertFalse(self.notificacoes.notificar_estado(self.encomenda, "enviada"))
+            self.assertFalse(self.notificar())
         self.assertEqual(Notificacao.objects.get().estado, "falhada")
         registo = RegistoAuditoria.objects.get(acao="NOTIFICACAO_FALHADA")
         self.assertEqual(registo.descricao, f"#{self.encomenda.id}: Telegram recusou (403); 1 tentativa(s)")
@@ -1968,7 +1976,7 @@ class FilaNotificacoesTests(TestCase):
 
     def test_a_message_still_failing_after_24_hours_is_given_up(self):
         with self.enviar(500):
-            self.notificacoes.notificar_estado(self.encomenda, "enviada")
+            self.notificar()
         Notificacao.objects.update(criada=timezone.now() - timedelta(hours=24, minutes=1))
         with self.enviar(500):
             self.assertEqual(self.notificacoes.reenviar_pendentes(), (0, 1))
@@ -1980,10 +1988,10 @@ class FilaNotificacoesTests(TestCase):
         from io import StringIO
         from django.core.management import call_command
         with self.enviar(500, 200):
-            self.notificacoes.notificar_estado(self.encomenda, "enviada")
+            self.notificar()
             saida = StringIO()
             call_command("cancelar_encomendas_abandonadas", "--horas", "1", stdout=saida)
-        self.assertIn("notificações: 1 reenviada(s), 0 abandonada(s)", saida.getvalue())
+        self.assertIn("notificações: 1 enviada(s), 0 abandonada(s)", saida.getvalue())
 
 
 class BloqueioClienteSemChaveTests(TestCase):
@@ -2033,3 +2041,38 @@ class MaquinaEstadosTests(TestCase):
         encomenda.refresh_from_db()
         self.assertEqual(encomenda.estado, "confirmada")
         self.assertFalse(RegistoAuditoria.objects.filter(acao="ENCOMENDA_ENVIADA").exists())
+
+
+class NotificacaoNaTransacaoTests(TestCase):
+    """The customer message is queued in the same transaction as the order change it reports."""
+
+    def setUp(self):
+        cliente = Utilizador.objects.create(telegram_id="821", nome="Fila")
+        self.encomenda = Encomenda.objects.create(utilizador=cliente, estado="confirmada", total=Decimal("4.00"))
+
+    def test_the_change_and_its_message_commit_together(self):
+        services.avancar_estado_encomenda(self.encomenda.pk, "enviada")
+        n = Notificacao.objects.get(encomenda=self.encomenda)
+        self.assertEqual((n.estado, n.tentativas), ("pendente", 0))  # queued, not sent: the caller sends it
+        self.assertIn("foi enviada", n.texto)
+
+    def test_a_rolled_back_change_queues_no_message(self):
+        with patch.object(RegistoAuditoria.objects, "create", side_effect=DatabaseError("falhou")),              self.assertRaises(DatabaseError):
+            services.avancar_estado_encomenda(self.encomenda.pk, "enviada")
+        self.assertFalse(Notificacao.objects.exists())
+
+    def test_a_message_the_caller_never_sent_goes_out_with_the_next_cleanup(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from django.test import override_settings
+        services.avancar_estado_encomenda(self.encomenda.pk, "enviada")  # then the caller "crashes"
+        with override_settings(TELEGRAM_TOKEN="123:teste"),              patch("core.notificacoes.httpx.post", return_value=MagicMock(status_code=200)) as post:
+            call_command("cancelar_encomendas_abandonadas", "--horas", "1", stdout=StringIO())
+        post.assert_called_once()
+        self.assertEqual(Notificacao.objects.get().estado, "enviada")
+
+    def test_an_expired_payment_screen_cancels_without_a_message(self):
+        Encomenda.objects.filter(pk=self.encomenda.pk).update(estado="pendente")
+        self.encomenda.refresh_from_db()
+        self.assertEqual(services._terminar_prazo(self.encomenda, "teste"), ("expirada", None))
+        self.assertFalse(Notificacao.objects.exists())

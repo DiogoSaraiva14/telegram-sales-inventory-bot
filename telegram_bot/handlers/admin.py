@@ -10,7 +10,7 @@ from asgiref.sync import sync_to_async
 
 from core.models import Utilizador, Produto, Encomenda
 from core import services
-from core.notificacoes import notificar_estado
+from core.notificacoes import enviar_da_encomenda
 from security.sanitization import sanitizar_id, sanitizar_delta_stock, EntradaInvalida
 from django.utils import timezone
 
@@ -187,7 +187,7 @@ async def _mudar_estado_e_notificar(
         )
         return
 
-    notificada = await sync_to_async(notificar_estado)(encomenda, mensagem_cliente)
+    notificada = await sync_to_async(enviar_da_encomenda)(encomenda.id)  # queued by the service
     await services.registar_auditoria(
         user_id,
         f"ADMIN_{label_acao}_ENCOMENDA",
