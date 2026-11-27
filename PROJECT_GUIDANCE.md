@@ -34,7 +34,7 @@ The strongest potential portfolio story is an end-to-end order and inventory wor
 - **Audit:** written in the same transaction as the order.
 - **Price:** charged as saved on the order (price snapshot), and the product name is snapshotted on the order line. Stripe gets no product description.
 - **Expired sessions (D19, reversed by the cart design on 2026-11-25):** an expired, unpaid Stripe Checkout Session used to be replaced with a new one if the customer retried before the expiry webhook arrived. Now an expired session cancels the order. A completed session waiting for the webhook is never replaced; the customer is told not to pay again.
-- **Expiry webhook (SEC-04, owner decision, 2026-11-24):** it cancels the unpaid order, returns its stock in the same transaction, and notifies the customer with the existing cancellation message. No scheduler. Orders that never got a session still hold stock.
+- **Expiry webhook (SEC-04, owner decision, 2026-11-24):** it cancels the unpaid order, returns its stock in the same transaction, and notifies the customer with the existing cancellation message. Orders that never got a session are cancelled, with their stock returned, by the 5-minute cleanup once they pass the cutoff (`cancelar_encomendas_abandonadas --horas 1`).
 - **Cancellation (SEC-06, owner decisions, 2026-11-24):**
   - Cancelling a paid order refunds it in full through Stripe.
   - Cancelling an order with an open payment link expires the link first. If the customer already paid, the order is not cancelled.
@@ -77,7 +77,7 @@ The design is [docs/designs/cart_resellable_shop.md](docs/designs/cart_resellabl
   - a customer's data is removed on request with the superuser-only "Anonimizar" action in Django admin; their orders stay for the accounts.
 - **Release safety:** migrations only move forward, with a database backup before each one.
 - **Legal:** invoicing, tax, shipping, withdrawal handling and legal texts stay outside the bot and are each shop's responsibility, stated in the reseller contract. Not legal advice; unverified.
-- **Stage 0 outcome (2026-11-27):** the owner states the code's rights are theirs; `LICENSE` reserves all rights; the demo uses generated placeholder images. Still open: the invoicing clause in the reseller contract and the rest of the Stripe checklist. Details and the decision record: [docs/stage0_checklist.md](docs/stage0_checklist.md).
+- **Stage 0 outcome (2026-11-27):** the owner states the code's rights are theirs; `LICENSE` reserves all rights; the demo uses generated placeholder images. The invoicing clause is drafted in the reseller contract (kept outside the repository), pending a lawyer's review; the Stripe checklist is done. Details and the decision record: [docs/stage0_checklist.md](docs/stage0_checklist.md).
 - **End-to-end run (G13):** Done on 2026-11-27 (demo database, Stripe test mode, real webhook through the Stripe CLI): a two-product order with a changed quantity was paid with a test card, confirmed by the webhook, and the customer got "Pagamento confirmado"; the admin marked it shipped and delivered (a message for each); an unpaid order was cancelled with its stock returned; stock buttons, product on/off and customer block/unblock worked and were audited; stock matched the paid orders. The rest ran the same day: a price changed while in a cart was flagged, the old confirmation screen was refused and the order was charged the new price; a paid order was cancelled through the admin cancel service and Stripe showed a full refund (succeeded, €69.90), with the stock returned and the refund message sent; an unpaid order left for 60 minutes was cancelled by Stripe's `checkout.session.expired` webhook with its stock returned. Fixes from the run: Django web logging, order lines on the admin order screen, a confirmation before cancelling, no blocking of admins from Telegram, and back buttons.
 
 ## Customer language (2026-11-27)
@@ -106,4 +106,4 @@ Do not silently choose new policies in code.
 
 ## Release and attribution
 
-The project began as the owner's course project; the owner states the rights are theirs (2026-11-27). `LICENSE` reserves all rights, and the original product images are not used. The repository stays private until the owner chooses to change its visibility.
+The project began as the owner's course project; the owner states the rights are theirs (2026-11-27). `LICENSE` reserves all rights, and the original product images are not used. The repository is public since 2026-11-27; the licence still reserves all rights.

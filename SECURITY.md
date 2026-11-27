@@ -86,7 +86,7 @@ core/views.py lines 45–79 checks payment state, then performs separate payment
 - `checkout.session.completed` now runs `core/services.py` `confirmar_pagamento`: one transaction that locks the order row and then the payment row (the same order as the expiry and checkout code), re-checks the stored session id and payment state, and only then writes the payment, order and audit rows.
 - A concurrent duplicate delivery waits for the lock, then sees `pago` and changes nothing. The Telegram message is sent after the commit, only by the delivery that confirmed the payment, so the customer gets at most one.
 - `checkout.session.expired` uses the same pattern (SEC-04).
-- **Not done:** no event-id table and no notification outbox. A failed Telegram send is logged and not retried, as before. A payment for a cancelled order is refunded in full (SEC-06).
+- **Later:** customer messages now go through an outbox: each service queues its message in the same transaction as the change, and the cleanup resends it for 24 hours, then records a failure in the audit log (`core/notificacoes.py`). There is still no event-id table; the row locks make duplicates harmless. A payment for a cancelled order is refunded in full (SEC-06).
 
 ### SEC-06 — Cancellation behavior diverges across admin surfaces (High priority)
 
